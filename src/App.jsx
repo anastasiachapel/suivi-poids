@@ -57,7 +57,7 @@ const mondayOf = (dateStr) => {
 const uid = () => Math.random().toString(36).slice(2, 10);
 const slugify = (s) => (s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
 
-const DEFAULT_SETTINGS = { name: "", weightGoal: null, calorieGoal: 2000, autoCalorie: false, sex: "", age: null, height: null, activityLevel: "legere", deficitLevel: "moderee", anthropicApiKey: "" };
+const DEFAULT_SETTINGS = { name: "", weightGoal: null, calorieGoal: 2000, autoCalorie: false, sex: "", age: null, height: null, activityLevel: "legere", deficitLevel: "moderee", anthropicApiKey: "", supabaseUrl: "", supabaseAnonKey: "" };
 const ACTIVITY_PRESETS = ["Marche", "Course", "Vélo", "Musculation", "Natation", "Autre"];
 const STRETCH_PRESETS = [
   { label: "Dos" }, { label: "Ischio-jambiers" }, { label: "Hanches" },
@@ -156,7 +156,7 @@ const SEED_WORKOUT_SESSIONS = [
   { name: "Escalade en salle", sportId: "escalade", duration: 60, level: "intermédiaire", exercises: ["Échauffement 10min (voies faciles)", "40min de voies ou blocs progressifs", "Retour au calme 10min étirements avant-bras et épaules"], notes: "Travaille le haut du corps et le gainage autant que le cardio." },
   { name: "Randonnée", sportId: "randonnee", duration: 90, level: "débutant", exercises: ["90min de marche en terrain naturel, avec dénivelé si possible"], notes: "Parfaite en récupération active ou le week-end, adapte la distance à ton niveau." },
   { name: "Corde à sauter HIIT", sportId: "corde", duration: 15, level: "avancé", exercises: ["Échauffement 3min", "10x (1min de saut / 30s récupération)", "Retour au calme 2min"], notes: "Très efficace en peu de temps, prévois de bonnes chaussures pour les chevilles." },
-].map((s) => ({ ...s, id: uid(), custom: false }));
+].map((s) => ({ ...s, id: "seed-" + s.sportId + "-" + slugify(s.name), custom: false }));
 function pickSessionForSport(sessions, sportId, excludeId) {
   const candidates = sessions.filter((s) => s.sportId === sportId);
   if (candidates.length === 0) return null;
@@ -232,7 +232,7 @@ const SEED_RECIPES = [
   { name: "Pomme et beurre de cacahuète", mealType: "collation", calories: 240, protein: 7, carbs: 26, fat: 13, prepTime: 2, highProtein: false, ingredients: ["Pomme", "Beurre de cacahuète"], instructions: "Coupe la pomme en tranches et sers avec une cuillère de beurre de cacahuète." },
   { name: "Shaker whey et banane", mealType: "collation", calories: 260, protein: 30, carbs: 28, fat: 3, prepTime: 3, highProtein: true, ingredients: ["Whey protéine", "Lait ou eau", "Banane"], instructions: "Mixe la whey avec le lait et la banane, sers frais." },
   { name: "Houmous, bâtonnets de légumes et pain pita", mealType: "collation", calories: 280, protein: 10, carbs: 34, fat: 12, prepTime: 5, highProtein: false, ingredients: ["Houmous", "Carotte", "Concombre", "Pain pita complet"], instructions: "Coupe les légumes en bâtonnets, sers avec le houmous et le pain pita." },
-].map((r) => ({ ...r, id: uid(), custom: false }));
+].map((r) => ({ ...r, id: "seed-" + slugify(r.name), custom: false }));
 
 // ---------- Storage helpers ----------
 // Version standalone : remplace l'API window.storage de Claude par localStorage.
@@ -256,16 +256,50 @@ async function saveKey(key, value) {
     console.error("Erreur de sauvegarde", key, e);
   }
 }
-// "Partagé" ici reste stocké localement sur cet appareil (pas de serveur).
-// Utile seulement si plusieurs personnes utilisent le même navigateur/appareil.
-async function saveShared(key, value) {
+// "Partagé" : si Supabase est configuré (Réglages → Duo), les données passent par une vraie
+// table partagée en ligne (visible sur tous les appareils). Sinon, repli sur localStorage
+// (visible seulement dans ce navigateur).
+function supabaseHeaders(config) {
+  return {
+    "Content-Type": "application/json",
+    apikey: config.anonKey,
+    Authorization: `Bearer ${config.anonKey}`,
+  };
+}
+async function saveShared(key, value, config) {
+  if (config?.url && config?.anonKey) {
+    try {
+      const res = await fetch(`${config.url}/rest/v1/shared_kv`, {
+        method: "POST",
+        headers: { ...supabaseHeaders(config), Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify([{ key, value, updated_at: new Date().toISOString() }]),
+      });
+      if (!res.ok) console.error("Erreur Supabase (saveShared)", await res.text());
+      return;
+    } catch (e) {
+      console.error("Erreur Supabase (saveShared)", e);
+      return;
+    }
+  }
   try {
     localStorage.setItem(LS_SHARED_PREFIX + key, JSON.stringify(value));
   } catch (e) {
     console.error("Erreur de sauvegarde partagée", key, e);
   }
 }
-async function listShared(prefix) {
+async function listShared(prefix, config) {
+  if (config?.url && config?.anonKey) {
+    try {
+      const res = await fetch(`${config.url}/rest/v1/shared_kv?select=key&key=like.${encodeURIComponent(prefix)}*`, {
+        headers: supabaseHeaders(config),
+      });
+      if (!res.ok) return [];
+      const rows = await res.json();
+      return rows.map((r) => r.key);
+    } catch (e) {
+      return [];
+    }
+  }
   try {
     const keys = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -277,7 +311,19 @@ async function listShared(prefix) {
     return [];
   }
 }
-async function getShared(key) {
+async function getShared(key, config) {
+  if (config?.url && config?.anonKey) {
+    try {
+      const res = await fetch(`${config.url}/rest/v1/shared_kv?select=value&key=eq.${encodeURIComponent(key)}&limit=1`, {
+        headers: supabaseHeaders(config),
+      });
+      if (!res.ok) return null;
+      const rows = await res.json();
+      return rows.length ? rows[0].value : null;
+    } catch (e) {
+      return null;
+    }
+  }
   try {
     const raw = localStorage.getItem(LS_SHARED_PREFIX + key);
     if (raw == null) return null;
@@ -602,6 +648,7 @@ export default function App() {
   const stretchMinutesToday = todaysStretch.reduce((sum, s) => sum + Number(s.duration || 0), 0);
 
   const mySlug = slugify(settings.name);
+  const sharedConfig = settings.supabaseUrl && settings.supabaseAnonKey ? { url: settings.supabaseUrl.replace(/\/+$/, ""), anonKey: settings.supabaseAnonKey } : null;
   useEffect(() => {
     if (loading || !mySlug) return;
     const summary = {
@@ -612,8 +659,8 @@ export default function App() {
       caloriesBurnedToday, stretchMinutesToday,
       updatedAt: new Date().toISOString(),
     };
-    saveShared(`partner-summary:${mySlug}`, summary);
-  }, [loading, mySlug, settings.name, settings.weightGoal, effectiveCalorieGoal, currentWeight, caloriesToday, caloriesBurnedToday, stretchMinutesToday, sortedWeights]);
+    saveShared(`partner-summary:${mySlug}`, summary, sharedConfig);
+  }, [loading, mySlug, settings.name, settings.weightGoal, effectiveCalorieGoal, currentWeight, caloriesToday, caloriesBurnedToday, stretchMinutesToday, sortedWeights, sharedConfig]);
 
   if (loading) {
     return (
@@ -702,7 +749,7 @@ export default function App() {
               onAdd={(item) => { const day = stretchLog[strDate] || []; updateStretchLog({ ...stretchLog, [strDate]: [...day, item] }); }}
               onDelete={(id) => { const day = (stretchLog[strDate] || []).filter((s) => s.id !== id); updateStretchLog({ ...stretchLog, [strDate]: day }); }} />
           )}
-          {tab === "duo" && <DuoScreen mySlug={mySlug} myName={settings.name} onOpenSettings={() => setSettingsOpen(true)} />}
+          {tab === "duo" && <DuoScreen mySlug={mySlug} myName={settings.name} onOpenSettings={() => setSettingsOpen(true)} sharedConfig={sharedConfig} />}
         </div>
 
         <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, display: "flex", justifyContent: "center" }}>
@@ -1568,10 +1615,39 @@ function pickEvenIndices(total, count) {
 
 function generateWorkoutWeek(preferences, weekStart, existingDays, sessions) {
   const { cardioTypes, availableDays } = preferences;
-  const muscuCount = preferences.counts.muscu;
-  const cardioCount = preferences.counts.cardio;
+  const fixedDays = preferences.fixedDays || {};
+  const days = {};
+  const lockedIdx = new Set();
+  const fixedIdx = new Set();
+
+  // 1) Jours verrouillés manuellement pour cette semaine : priorité absolue.
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(weekStart, i);
+    const existing = existingDays?.[date];
+    if (existing?.locked) { days[date] = existing; lockedIdx.add(i); }
+  }
+
+  // 2) Jours fixes récurrents (ex. "lundi = muscu") : placés ensuite, sauf si déjà verrouillés.
+  const remainingCounts = { ...preferences.counts };
+  Object.entries(fixedDays).forEach(([idxStr, sportId]) => {
+    const i = Number(idxStr);
+    if (lockedIdx.has(i) || !sportId) return;
+    const date = addDays(weekStart, i);
+    fixedIdx.add(i);
+    if (sportId === "repos") {
+      days[date] = { sportId: "repos", sessionId: null, comboSessionId: null, locked: false };
+      return;
+    }
+    const category = sportById(sportId).category;
+    if (remainingCounts[category] != null) remainingCounts[category] = Math.max(0, remainingCounts[category] - 1);
+    const session = pickSessionForSport(sessions, sportId, null);
+    days[date] = { sportId, sessionId: session ? session.id : null, comboSessionId: null, locked: false };
+  });
+
+  // 3) Distribution automatique du reste (renforcement + cardio, plafonnée).
+  const muscuCount = remainingCounts.muscu;
+  const cardioCount = remainingCounts.cardio;
   const trainingTotal = Math.min(MAX_TRAINING_DAYS, muscuCount + cardioCount);
-  // Si le total dépasse le plafond, on réduit proportionnellement muscu et cardio.
   const scale = (muscuCount + cardioCount) > 0 ? trainingTotal / (muscuCount + cardioCount) : 1;
   const trainingCounts = { muscu: Math.round(muscuCount * scale), cardio: Math.round(cardioCount * scale) };
   while (trainingCounts.muscu + trainingCounts.cardio > trainingTotal) {
@@ -1579,15 +1655,7 @@ function generateWorkoutWeek(preferences, weekStart, existingDays, sessions) {
   }
   const sequence = buildSessionSequence(trainingCounts);
   const sortedAvail = [...availableDays].sort((a, b) => a - b);
-
-  const days = {};
-  const lockedIdx = new Set();
-  for (let i = 0; i < 7; i++) {
-    const date = addDays(weekStart, i);
-    const existing = existingDays?.[date];
-    if (existing?.locked) { days[date] = existing; lockedIdx.add(i); }
-  }
-  const freeAvail = sortedAvail.filter((i) => !lockedIdx.has(i));
+  const freeAvail = sortedAvail.filter((i) => !lockedIdx.has(i) && !fixedIdx.has(i));
 
   const trainingAssign = [];
   let seqIdx = 0;
@@ -1599,9 +1667,9 @@ function generateWorkoutWeek(preferences, weekStart, existingDays, sessions) {
   const usedIdx = new Set(trainingAssign.map((t) => t.i));
   const remainingFree = freeAvail.filter((i) => !usedIdx.has(i));
 
-  const comboCount = Math.min(preferences.counts.mobilite, trainingAssign.length);
+  const comboCount = Math.min(remainingCounts.mobilite, trainingAssign.length);
   const comboPositions = new Set(pickEvenIndices(trainingAssign.length, comboCount));
-  const standaloneCount = Math.max(0, preferences.counts.mobilite - comboCount);
+  const standaloneCount = Math.max(0, remainingCounts.mobilite - comboCount);
   const standaloneDays = remainingFree.slice(0, standaloneCount);
 
   const lastSessionBySport = {};
@@ -1643,11 +1711,13 @@ function generateWorkoutWeek(preferences, weekStart, existingDays, sessions) {
 
 const stepBtnStyle = { width: 28, height: 28, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surfaceAlt, color: C.ivory, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 };
 
-function SportQuestionnaire({ initial, onSubmit, onCancel }) {
+function SportQuestionnaire({ initial, templateDefaults, onSubmit, onCancel }) {
+  const base = initial || templateDefaults;
   const [stage, setStage] = useState("counts");
-  const [counts, setCounts] = useState(initial?.counts || { muscu: SPORT_CATEGORY_META.muscu.recommended, cardio: SPORT_CATEGORY_META.cardio.recommended, mobilite: SPORT_CATEGORY_META.mobilite.recommended });
-  const [cardioTypes, setCardioTypes] = useState(initial?.cardioTypes || []);
-  const [availableDays, setAvailableDays] = useState(initial?.availableDays || []);
+  const [counts, setCounts] = useState(base?.counts || { muscu: SPORT_CATEGORY_META.muscu.recommended, cardio: SPORT_CATEGORY_META.cardio.recommended, mobilite: SPORT_CATEGORY_META.mobilite.recommended });
+  const [cardioTypes, setCardioTypes] = useState(base?.cardioTypes || []);
+  const [availableDays, setAvailableDays] = useState(base?.availableDays || []);
+  const [fixedDays, setFixedDays] = useState(base?.fixedDays || {});
 
   const setCount = (cat, delta) => setCounts((c) => {
     const next = { ...c, [cat]: Math.max(0, c[cat] + delta) };
@@ -1657,6 +1727,23 @@ function SportQuestionnaire({ initial, onSubmit, onCancel }) {
   });
   const toggleCardioType = (id) => setCardioTypes((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
   const toggleDay = (i) => setAvailableDays((d) => (d.includes(i) ? d.filter((x) => x !== i) : [...d, i].sort((a, b) => a - b)));
+  const fixedCycleOptions = () => {
+    const opts = ["auto"];
+    if (counts.muscu > 0) opts.push("muscu");
+    if (counts.cardio > 0) opts.push(...cardioTypes);
+    if (counts.mobilite > 0) opts.push("mobilite");
+    opts.push("repos");
+    return opts;
+  };
+  const cycleFixedDay = (i) => setFixedDays((f) => {
+    const opts = fixedCycleOptions();
+    const current = f[i] || "auto";
+    const idx = opts.indexOf(current);
+    const next = opts[(idx === -1 ? 0 : idx + 1) % opts.length];
+    const copy = { ...f };
+    if (next === "auto") delete copy[i]; else copy[i] = next;
+    return copy;
+  });
 
   const trainingTotal = counts.muscu + counts.cardio;
   const total = trainingTotal + counts.mobilite;
@@ -1716,9 +1803,19 @@ function SportQuestionnaire({ initial, onSubmit, onCancel }) {
         <div style={{ fontSize: 10.5, color: C.gold, marginBottom: 8, lineHeight: 1.5 }}>Tu as {trainingTotal} séances de renforcement/cardio souhaitées mais {availableDays.length} jour{availableDays.length > 1 ? "s" : ""} dispo — certaines ne seront pas placées.</div>
       )}
 
+      <div style={{ color: C.muted, fontSize: 12, margin: "10px 0 4px" }}>Jours fixes (optionnel)</div>
+      <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>Tape un jour pour lui assigner toujours le même sport (ex. "lundi = musculation"), semaine après semaine. Retape pour changer, jusqu'à revenir à "auto".</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+        {WEEKDAYS.map((d, i) => {
+          const fixed = fixedDays[i];
+          const label = fixed ? `${d} · ${sportById(fixed).label}` : d;
+          return <Chip key={i} active={!!fixed} color={C.sage} onClick={() => cycleFixedDay(i)}>{label}</Chip>;
+        })}
+      </div>
+
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <PrimaryButton color={C.surfaceAlt} style={{ color: C.ivory }} onClick={() => setStage("counts")}>Retour</PrimaryButton>
-        <PrimaryButton color={C.rust} disabled={!canSubmit} onClick={() => onSubmit({ counts, cardioTypes, availableDays })}>
+        <PrimaryButton color={C.rust} disabled={!canSubmit} onClick={() => onSubmit({ counts, cardioTypes, availableDays, fixedDays })}>
           <Check size={15} /> {initial ? "Mettre à jour" : "Générer mon plan"}
         </PrimaryButton>
       </div>
@@ -1843,8 +1940,11 @@ function WorkoutPlanScreen({ workoutPlans, updateWorkoutPlans, logWorkoutToDay, 
   const [weekStart, setWeekStart] = useState(mondayOf(todayStr()));
   const [editing, setEditing] = useState(false);
   const [picker, setPicker] = useState(null); // { date, field: 'session' | 'combo' }
+  const [template, setTemplate] = useState(null);
   const plan = workoutPlans[weekStart];
   const setPlan = (next) => updateWorkoutPlans({ ...workoutPlans, [weekStart]: next });
+
+  useEffect(() => { (async () => setTemplate(await loadKey("workout-template", null)))(); }, []);
 
   const days = plan ? Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)) : [];
   const showQuestionnaire = !plan?.preferences || editing;
@@ -1860,9 +1960,12 @@ function WorkoutPlanScreen({ workoutPlans, updateWorkoutPlans, logWorkoutToDay, 
       {showQuestionnaire ? (
         <SportQuestionnaire
           initial={plan?.preferences}
+          templateDefaults={template}
           onCancel={() => setEditing(false)}
           onSubmit={(preferences) => {
             setPlan({ preferences, days: generateWorkoutWeek(preferences, weekStart, plan?.days, sessions) });
+            setTemplate(preferences);
+            saveKey("workout-template", preferences);
             setEditing(false);
           }}
         />
@@ -1877,6 +1980,11 @@ function WorkoutPlanScreen({ workoutPlans, updateWorkoutPlans, logWorkoutToDay, 
                 {plan.preferences.counts.mobilite > 0 && <span style={{ fontSize: 11, color: C.ivory, background: C.surfaceAlt, borderRadius: 999, padding: "3px 8px" }}>Étirement {plan.preferences.counts.mobilite}x</span>}
               </div>
               <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Dispo : {plan.preferences.availableDays.map((i) => WEEKDAYS[i]).join(", ")}</div>
+              {plan.preferences.fixedDays && Object.keys(plan.preferences.fixedDays).length > 0 && (
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                  Fixe : {Object.entries(plan.preferences.fixedDays).map(([i, sid]) => `${WEEKDAYS[i]} ${sportById(sid).label}`).join(", ")}
+                </div>
+              )}
             </div>
             <button onClick={() => setEditing(true)} style={{ background: "none", border: "none", color: C.sage, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
               <Pencil size={12} /> Modifier
@@ -2132,17 +2240,17 @@ function PersonCard({ summary, isMe }) {
   );
 }
 
-function DuoScreen({ mySlug, myName, onOpenSettings }) {
+function DuoScreen({ mySlug, myName, onOpenSettings, sharedConfig }) {
   const [loading, setLoading] = useState(true);
   const [people, setPeople] = useState([]); // [{slug, summary}]
 
   const load = useCallback(async () => {
     setLoading(true);
-    const keys = await listShared("partner-summary:");
-    const items = await Promise.all(keys.map(async (k) => ({ slug: k.replace("partner-summary:", ""), summary: await getShared(k) })));
+    const keys = await listShared("partner-summary:", sharedConfig);
+    const items = await Promise.all(keys.map(async (k) => ({ slug: k.replace("partner-summary:", ""), summary: await getShared(k, sharedConfig) })));
     setPeople(items.filter((p) => p.summary));
     setLoading(false);
-  }, []);
+  }, [sharedConfig]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -2177,7 +2285,9 @@ function DuoScreen({ mySlug, myName, onOpenSettings }) {
         <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
           <Info size={14} color={C.muted} style={{ marginTop: 1, flexShrink: 0 }} />
           <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
-            Dans cette version, ces chiffres sont stockés uniquement dans ce navigateur (pas de serveur partagé) — ça ne fonctionne donc que si vous utilisez le même appareil/navigateur. Pour un vrai partage entre deux téléphones, il faudrait ajouter un backend. Ton journal détaillé (aliments, recettes, notes) reste toujours privé.
+            {sharedConfig
+              ? "Ces chiffres passent par ta base Supabase et sont donc visibles sur tous les appareils connectés avec la même clé — pas seulement ta copine, toute personne qui a cette clé. Ton journal détaillé (aliments, recettes, notes) reste toujours privé, seul ce résumé du jour est partagé."
+              : "Configure Supabase dans Réglages → Duo pour un vrai partage entre deux téléphones. Sans ça, ces chiffres restent stockés uniquement dans ce navigateur. Ton journal détaillé reste toujours privé."}
           </div>
         </div>
       </Card>
@@ -2185,7 +2295,7 @@ function DuoScreen({ mySlug, myName, onOpenSettings }) {
       {loading && <EmptyState text="Chargement…" />}
       {!loading && me && <PersonCard summary={me.summary} isMe />}
       {!loading && others.length === 0 && (
-        <EmptyState text="Personne d'autre pour l'instant sur cet appareil." />
+        <EmptyState text={sharedConfig ? "Personne d'autre pour l'instant." : "Personne d'autre pour l'instant sur cet appareil."} />
       )}
       {!loading && others.map((p) => <PersonCard key={p.slug} summary={p.summary} isMe={false} />)}
     </div>
@@ -2268,11 +2378,54 @@ function SettingsModal({ settings, currentWeight, onClose, onSave }) {
             </div>
           </div>
 
+          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12, marginTop: 4 }}>
+            <div style={{ fontSize: 13, color: C.ivory, fontWeight: 500, marginBottom: 6 }}>Duo — partage entre appareils (optionnel)</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <TextField label="URL du projet Supabase" placeholder="https://xxxx.supabase.co" value={form.supabaseUrl || ""} onChange={(e) => set({ supabaseUrl: e.target.value })} />
+              <TextField label="Clé anon Supabase" type="password" placeholder="eyJ..." value={form.supabaseAnonKey || ""} onChange={(e) => set({ supabaseAnonKey: e.target.value })} />
+            </div>
+            <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginTop: 6 }}>
+              Sans ça, l'onglet Duo ne fonctionne que sur cet appareil. Avec Supabase configuré (même URL et clé pour toi et ta copine), vos progrès du jour se synchronisent entre vos deux téléphones. Voir le README ("Duo entre deux téléphones") pour la création du projet et de la table — 5 minutes, gratuit.
+            </div>
+          </div>
+
+          <ResetDataSection />
+
           <div style={{ marginTop: 6 }}>
             <PrimaryButton onClick={() => onSave(form)}><Check size={15} /> Enregistrer</PrimaryButton>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ResetDataSection() {
+  const [confirming, setConfirming] = useState(false);
+  const doReset = () => {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith(LS_PREFIX))
+      .forEach((k) => localStorage.removeItem(k));
+    window.location.reload();
+  };
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12, marginTop: 4 }}>
+      <div style={{ fontSize: 13, color: C.ivory, fontWeight: 500, marginBottom: 6 }}>Réinitialiser les données</div>
+      {!confirming ? (
+        <button onClick={() => setConfirming(true)} style={{ background: "none", border: `1px solid ${C.danger}`, color: C.danger, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, cursor: "pointer", width: "100%" }}>
+          Effacer toutes mes données et recommencer à zéro
+        </button>
+      ) : (
+        <div>
+          <div style={{ fontSize: 11.5, color: C.danger, lineHeight: 1.5, marginBottom: 8 }}>
+            Ça efface définitivement tout (poids, journal, recettes perso, plans...) sur cet appareil. Utile si l'appli affiche des données incohérentes ("Recette introuvable" etc.). Es-tu sûr ?
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <PrimaryButton color={C.surfaceAlt} style={{ color: C.ivory }} onClick={() => setConfirming(false)}>Annuler</PrimaryButton>
+            <PrimaryButton color={C.danger} onClick={doReset}>Oui, tout effacer</PrimaryButton>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -59,16 +59,47 @@ de serveur ici, ils ont besoin de **ta propre clé API Anthropic**, à ajouter d
   budget sur ta clé côté Anthropic par précaution.
 - Sans clé, tout le reste de l'appli fonctionne normalement — seuls ces deux boutons sont désactivés.
 
-## 5. Limites à connaître
+## 5. Duo entre deux téléphones (optionnel)
 
-- **Un appareil = une base de données.** Si tu ouvres l'appli sur ton téléphone et sur ton
-  ordinateur, ce sont deux jeux de données séparés (pas de synchronisation automatique).
-- **L'onglet "Duo"** (progrès partagés) ne fonctionne que si deux personnes utilisent le même
-  navigateur/appareil, faute de serveur partagé. Pour un vrai partage entre deux téléphones,
-  il faudrait ajouter un petit backend (par ex. Supabase ou Firebase) — possible plus tard si
-  tu veux, dis-le-moi.
-- Pense à exporter/sauvegarder tes données de temps en temps si tu vides le cache de ton
-  navigateur, tu perdrais l'historique (pas d'export intégré pour l'instant).
+L'onglet "Duo" partage un résumé du jour (poids, calories, activité) entre toi et ta copine.
+Sans configuration, ça ne marche que si vous êtes sur le même appareil/navigateur. Pour un vrai
+partage entre deux téléphones, connecte un projet **Supabase** gratuit (base de données en ligne) :
+
+1. Crée un compte sur [supabase.com](https://supabase.com) et un nouveau projet (gratuit).
+2. Dans l'onglet **SQL Editor** du projet, exécute ce code pour créer la table nécessaire :
+
+   ```sql
+   create table shared_kv (
+     key text primary key,
+     value jsonb,
+     updated_at timestamptz default now()
+   );
+   alter table shared_kv enable row level security;
+   create policy "public read" on shared_kv for select using (true);
+   create policy "public write" on shared_kv for insert with check (true);
+   create policy "public update" on shared_kv for update using (true);
+   ```
+
+   ⚠️ Ces règles rendent la table lisible/modifiable par quiconque a l'URL et la clé (comme un
+   Google Doc "toute personne avec le lien"). Suffisant pour un usage à deux, mais pas pour des
+   données sensibles.
+3. Dans **Settings → API** du projet Supabase, récupère l'**URL du projet** et la clé **anon public**.
+4. Dans l'appli, **Réglages → Duo**, colle ces deux valeurs. Fais pareil sur le téléphone de ta
+   copine, avec exactement les mêmes valeurs.
+5. Chacun renseigne son prénom dans Réglages — l'onglet Duo affiche alors les deux profils,
+   synchronisés en quasi temps réel (bouton actualiser si besoin).
+
+Le reste de l'appli (journal, recettes, poids...) continue de fonctionner uniquement en local,
+que Supabase soit configuré ou non — seul l'onglet Duo passe par le serveur partagé.
+
+## 6. Limites à connaître
+
+- **Un appareil = une base de données**, sauf pour l'onglet Duo si Supabase est configuré
+  (voir ci-dessus). Le reste (poids, journal, recettes) ne synchronise pas entre appareils.
+- Pense à ne pas vider les données de site de ton navigateur, tu perdrais ton historique
+  (pas d'export/import intégré pour l'instant — dis-le-moi si tu veux que je l'ajoute).
+- En cas de données incohérentes (ex. "Recette introuvable"), un bouton **Réglages → Réinitialiser
+  les données** efface tout proprement sur cet appareil pour repartir à zéro.
 
 ## Structure du projet
 
