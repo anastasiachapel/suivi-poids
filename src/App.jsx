@@ -1126,7 +1126,7 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
 
       <Card>
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>Ajouter un aliment</div>
-        <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFileChange} />
+        <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFileChange} />
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <div style={{ flex: 1 }}>
             <PrimaryButton color={C.gold} onClick={() => setFoodPickerOpen(true)}>
@@ -1390,7 +1390,7 @@ function RecipeBankScreen({ recipes, onAdd, onUpdate, onDelete, apiKey }) {
         {MEAL_TYPES.map((m) => <Chip key={m.id} active={filter === m.id} onClick={() => setFilter(m.id)} color={C.gold}>{m.label}</Chip>)}
       </div>
 
-      <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFileChange} />
+      <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFileChange} />
 
       {!adding && !editingId && !importedData && (
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
