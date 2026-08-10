@@ -58,7 +58,6 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const slugify = (s) => (s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
 
 const DEFAULT_SETTINGS = { name: "", weightGoal: null, calorieGoal: 2000, autoCalorie: false, sex: "", age: null, height: null, activityLevel: "legere", deficitLevel: "moderee", anthropicApiKey: "", supabaseUrl: "", supabaseAnonKey: "" };
-const ACTIVITY_PRESETS = ["Marche", "Course", "Vélo", "Musculation", "Natation", "Autre"];
 const STRETCH_PRESETS = [
   { label: "Dos" }, { label: "Ischio-jambiers" }, { label: "Hanches" },
   { label: "Épaules & cou" }, { label: "Routine complète" },
@@ -87,6 +86,8 @@ const SPORT_OPTIONS = [
   { id: "escalade", label: "Escalade", category: "cardio", duration: 45, kcalPerMin: 8 },
   { id: "randonnee", label: "Randonnée", category: "cardio", duration: 60, kcalPerMin: 6 },
   { id: "corde", label: "Corde à sauter", category: "cardio", duration: 15, kcalPerMin: 12 },
+  { id: "crossfit", label: "CrossFit", category: "cardio", duration: 45, kcalPerMin: 11 },
+  { id: "pilates", label: "Pilates", category: "mobilite", duration: 40, kcalPerMin: 4 },
   { id: "mobilite", label: "Yoga / Mobilité", category: "mobilite", duration: 30, kcalPerMin: 3 },
 ];
 const CATEGORY_COLOR = { muscu: C.rust, cardio: C.gold, mobilite: C.sage, repos: C.sage };
@@ -156,6 +157,10 @@ const SEED_WORKOUT_SESSIONS = [
   { name: "Escalade en salle", sportId: "escalade", duration: 60, level: "intermédiaire", exercises: ["Échauffement 10min (voies faciles)", "40min de voies ou blocs progressifs", "Retour au calme 10min étirements avant-bras et épaules"], notes: "Travaille le haut du corps et le gainage autant que le cardio." },
   { name: "Randonnée", sportId: "randonnee", duration: 90, level: "débutant", exercises: ["90min de marche en terrain naturel, avec dénivelé si possible"], notes: "Parfaite en récupération active ou le week-end, adapte la distance à ton niveau." },
   { name: "Corde à sauter HIIT", sportId: "corde", duration: 15, level: "avancé", exercises: ["Échauffement 3min", "10x (1min de saut / 30s récupération)", "Retour au calme 2min"], notes: "Très efficace en peu de temps, prévois de bonnes chaussures pour les chevilles." },
+  { name: "WOD CrossFit", sportId: "crossfit", duration: 45, level: "avancé", exercises: ["Échauffement 10min (mobilité + montée en charge progressive)", "WOD chronométré : circuit mêlant haltérophilie, gymnastique et cardio (20-25min)", "Retour au calme 10min étirements"], notes: "Intensité élevée — priorise toujours la technique à la charge/vitesse, adapte les mouvements à ton niveau." },
+  { name: "CrossFit débutant (technique)", sportId: "crossfit", duration: 40, level: "débutant", exercises: ["Échauffement 10min", "Travail technique sur 2-3 mouvements de base (squat, gainage, kettlebell) 20min", "Petit circuit léger 10min"], notes: "Idéal pour apprendre les mouvements avant d'enchaîner sur des WOD plus intenses." },
+  { name: "Pilates renforcement profond", sportId: "pilates", duration: 40, level: "débutant", exercises: ["Respiration + activation du centre 5min", "Série au sol : gainage, contrôle, mobilité de la colonne 30min", "Étirements finaux 5min"], notes: "Travaille la sangle abdominale profonde et la posture, bon complément à la musculation." },
+  { name: "Pilates dynamique", sportId: "pilates", duration: 35, level: "intermédiaire", exercises: ["Échauffement articulaire 5min", "Enchaînements dynamiques (roll-up, cent, criss-cross...) 25min", "Étirements 5min"], notes: "Plus cardio que le Pilates classique, sollicite aussi l'équilibre." },
 ].map((s) => ({ ...s, id: "seed-" + s.sportId + "-" + slugify(s.name), custom: false }));
 function pickSessionForSport(sessions, sportId, excludeId) {
   const candidates = sessions.filter((s) => s.sportId === sportId);
@@ -1753,7 +1758,7 @@ function ActivityScreen({ date, setDate, items, onAdd, onDelete, workoutPlans, u
   return (
     <div>
       <SegControl value={sub} onChange={setSub} options={[{ id: "journal", label: "Journal" }, { id: "seances", label: "Séances" }, { id: "plan", label: "Plan sport" }]} />
-      {sub === "journal" && <ActivityJournalScreen date={date} setDate={setDate} items={items} onAdd={onAdd} onDelete={onDelete} />}
+      {sub === "journal" && <ActivityJournalScreen date={date} setDate={setDate} items={items} onAdd={onAdd} onDelete={onDelete} sessions={workoutSessions} />}
       {sub === "seances" && (
         <SessionBankScreen
           sessions={workoutSessions}
@@ -1767,12 +1772,51 @@ function ActivityScreen({ date, setDate, items, onAdd, onDelete, workoutPlans, u
   );
 }
 
-function ActivityJournalScreen({ date, setDate, items, onAdd, onDelete }) {
-  const [type, setType] = useState(ACTIVITY_PRESETS[0]);
+function AllSessionsPickerModal({ sessions, onSelect, onClose }) {
+  const [filterSport, setFilterSport] = useState("tous");
+  const filtered = filterSport === "tous" ? sessions : sessions.filter((s) => s.sportId === filterSport);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto", maxHeight: "78vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>Choisir une séance</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
+        </div>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 10 }}>
+          <Chip active={filterSport === "tous"} onClick={() => setFilterSport("tous")} color={C.rust}>Tous</Chip>
+          {SPORT_OPTIONS.map((s) => <Chip key={s.id} active={filterSport === s.id} onClick={() => setFilterSport(s.id)} color={CATEGORY_COLOR[s.category]}>{s.label}</Chip>)}
+        </div>
+        <div style={{ overflowY: "auto" }}>
+          {filtered.length === 0 && <EmptyState text="Aucune séance pour ce sport — ajoutes-en dans l'onglet Séances." />}
+          {filtered.map((s) => {
+            const def = sportById(s.sportId);
+            const kcal = Math.round(s.duration * def.kcalPerMin);
+            return (
+              <button key={s.id} onClick={() => onSelect(s)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "10px 2px", cursor: "pointer" }}>
+                <div style={{ color: C.ivory, fontSize: 14 }}>{s.name}</div>
+                <div style={{ color: C.muted, fontSize: 11.5, fontFamily: FONT_MONO }}>{def.label} · {s.duration} min · ~{kcal} kcal</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityJournalScreen({ date, setDate, items, onAdd, onDelete, sessions }) {
+  const [type, setType] = useState(SPORT_OPTIONS[0].label);
   const [duration, setDuration] = useState("");
   const [calories, setCalories] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const total = items.reduce((s, a) => s + Number(a.calories || 0), 0);
+  const manualTypes = [...SPORT_OPTIONS.map((s) => s.label), "Autre"];
   const submit = () => { if (!duration) return; onAdd({ id: uid(), type, duration: Number(duration), calories: calories ? Number(calories) : 0 }); setDuration(""); setCalories(""); };
+  const selectSession = (session) => {
+    const def = sportById(session.sportId);
+    onAdd({ id: uid(), type: `${def.label} · ${session.name}`, duration: session.duration, calories: Math.round(session.duration * def.kcalPerMin) });
+    setPickerOpen(false);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1781,10 +1825,17 @@ function ActivityJournalScreen({ date, setDate, items, onAdd, onDelete }) {
         <div style={{ fontFamily: FONT_MONO, fontSize: 22, color: C.ivory }}>{total} kcal</div>
         <div style={{ fontSize: 12, color: C.muted }}>brûlées · {items.length} séance{items.length !== 1 ? "s" : ""}</div>
       </Card>
+
       <Card>
-        <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>Nouvelle séance</div>
+        <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>Depuis la banque de séances</div>
+        <PrimaryButton color={C.rust} onClick={() => setPickerOpen(true)}><BookOpen size={15} /> Choisir une séance</PrimaryButton>
+        <div style={{ fontSize: 10.5, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>Durée et calories se remplissent automatiquement à partir de la séance choisie.</div>
+      </Card>
+
+      <Card>
+        <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>Ou ajoute en manuel</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-          {ACTIVITY_PRESETS.map((p) => <Chip key={p} active={type === p} color={C.rust} onClick={() => setType(p)}>{p}</Chip>)}
+          {manualTypes.map((p) => <Chip key={p} active={type === p} color={C.rust} onClick={() => setType(p)}>{p}</Chip>)}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <TextField type="number" inputMode="numeric" placeholder="Durée (min)" value={duration} onChange={(e) => setDuration(e.target.value)} />
@@ -1792,11 +1843,14 @@ function ActivityJournalScreen({ date, setDate, items, onAdd, onDelete }) {
         </div>
         <div style={{ marginTop: 10 }}><PrimaryButton color={C.rust} onClick={submit} disabled={!duration}><Plus size={15} /> Ajouter</PrimaryButton></div>
       </Card>
+
       <Card>
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 4 }}>Séances du jour</div>
         {items.length === 0 && <EmptyState text="Aucune activité enregistrée." />}
         {items.map((a) => <ListRow key={a.id} title={a.type} subtitle={`${a.duration} min`} right={a.calories ? `${a.calories} kcal` : "—"} onDelete={() => onDelete(a.id)} />)}
       </Card>
+
+      {pickerOpen && <AllSessionsPickerModal sessions={sessions} onSelect={selectSession} onClose={() => setPickerOpen(false)} />}
     </div>
   );
 }
