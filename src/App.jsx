@@ -1270,19 +1270,16 @@ function generateDay(recipes, calorieGoal, includeMeals, prevDay) {
   return day;
 }
 
-function generateWeek(recipes, calorieGoal, includeMeals) {
+function generateWeek(recipes, calorieGoal, includeMeals, weekStart) {
   const days = {};
   let prev = null;
-  return { includeMeals, days: (function build() {
-    const start = mondayOf(todayStr());
-    for (let i = 0; i < 7; i++) {
-      const date = addDays(start, i);
-      const day = generateDay(recipes, calorieGoal, includeMeals, prev);
-      days[date] = day;
-      prev = day;
-    }
-    return days;
-  })() };
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(weekStart, i);
+    const day = generateDay(recipes, calorieGoal, includeMeals, prev);
+    days[date] = day;
+    prev = day;
+  }
+  return { includeMeals, days };
 }
 
 function regenerateDay(existingPlan, date, recipes, calorieGoal) {
@@ -1385,7 +1382,7 @@ function PlanScreen({ recipes, calorieGoal, proteinGoal, mealPlans, updateMealPl
 
   const generate = () => {
     if (recipes.length === 0) return;
-    const fresh = generateWeek(recipes, calorieGoal, includeMeals);
+    const fresh = generateWeek(recipes, calorieGoal, includeMeals, weekStart);
     mutatePlan(fresh);
   };
 
@@ -1393,7 +1390,7 @@ function PlanScreen({ recipes, calorieGoal, proteinGoal, mealPlans, updateMealPl
     const activeCount = Object.values(includeMeals).filter(Boolean).length;
     if (includeMeals[mid] && activeCount <= 1) return; // garde au moins un repas actif
     const nextIncludeMeals = { ...includeMeals, [mid]: !includeMeals[mid] };
-    if (!plan) { mutatePlan(generateWeek(recipes, calorieGoal, nextIncludeMeals)); return; }
+    if (!plan) { mutatePlan(generateWeek(recipes, calorieGoal, nextIncludeMeals, weekStart)); return; }
     mutatePlan({ ...plan, includeMeals: nextIncludeMeals });
   };
 
