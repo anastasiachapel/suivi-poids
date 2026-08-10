@@ -428,11 +428,28 @@ function fileToBase64(file) {
   });
 }
 
+function extractLastJson(text) {
+  const start = text.lastIndexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) throw new Error("Impossible d'analyser cette photo, réessaie avec une image plus nette.");
+  try { return JSON.parse(text.slice(start, end + 1)); }
+  catch (e) { throw new Error("Impossible d'analyser cette photo, réessaie avec une image plus nette."); }
+}
+
 async function extractRecipeFromImage(base64, mediaType, apiKey) {
   if (!apiKey) throw new Error("Ajoute ta clé API Anthropic dans les réglages pour utiliser la reconnaissance photo.");
-  const prompt = `Regarde cette photo (recette, plat cuisiné, ou capture d'écran de recette) et extrais les informations sous forme d'un objet JSON STRICT uniquement, sans texte avant ni après, sans balises markdown. Utilise exactement ces clés :
-{"name": string (nom du plat en français), "mealType": une valeur parmi "petit-dej","dejeuner","diner","collation" selon le repas le plus probable, "calories": nombre entier (estimation par portion individuelle), "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes, "prepTime": nombre entier en minutes (estimation), "highProtein": booléen (true si environ 25g de protéines ou plus par portion), "ingredients": tableau de strings (ingrédients visibles ou mentionnés, avec quantités si connues), "instructions": string (préparation résumée en 2-3 phrases maximum, dans tes propres mots)}
-Si l'image ne montre pas clairement un plat ou une recette identifiable, réponds uniquement avec {"error":"non_identifiable"}. Base les valeurs nutritionnelles sur une portion individuelle standard, ce sont des estimations.`;
+  const prompt = `Regarde attentivement cette photo (recette, plat cuisiné, emballage de produit, ou capture d'écran de recette).
+
+D'ABORD, vérifie s'il y a une étiquette nutritionnelle imprimée (tableau "valeurs nutritionnelles") visible et lisible sur la photo :
+- Si OUI : lis directement les chiffres imprimés, ne les recalcule pas. Note la base indiquée (ex. "pour 100g" ou "par portion de 30g") dans le champ "name" (ex. "Céréales XYZ — pour 100g"). Les valeurs renvoyées doivent correspondre exactement à cette base telle qu'imprimée.
+- Si NON (plat cuisiné, recette sans étiquette) : procède par estimation visuelle composant par composant :
+  1. Liste chaque composant visible séparément (source de protéine, féculent, légumes, sauce/matière grasse, etc.)
+  2. Pour chacun, estime la quantité en te basant sur des repères visuels concrets (diamètre d'assiette ~26cm, taille d'une main/fourchette si visible, épaisseur/volume apparent) plutôt qu'une estimation globale au jugé
+  3. Additionne les valeurs de chaque composant pour obtenir le total
+
+Réfléchis brièvement (3-5 lignes maximum), en indiquant si tu as lu une étiquette ou estimé visuellement, PUIS termine ta réponse par un objet JSON strict sur la toute dernière ligne, sans balises markdown, avec exactement ces clés :
+{"name": string (nom du plat en français, avec la base "pour 100g"/"par portion" si lu sur une étiquette), "mealType": une valeur parmi "petit-dej","dejeuner","diner","collation" selon le repas le plus probable, "calories": nombre entier, "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes, "prepTime": nombre entier en minutes (estimation, 0 si produit emballé), "highProtein": booléen (true si environ 25g de protéines ou plus), "ingredients": tableau de strings (composants ou ingrédients listés sur l'étiquette si présents), "instructions": string (préparation résumée en 2-3 phrases, ou vide si c'est un produit emballé)}
+Si l'image ne montre ni plat, ni recette, ni étiquette lisible, le JSON final doit être {"error":"non_identifiable"}. Si tu as estimé visuellement (pas d'étiquette), sois transparent sur l'incertitude dans ton raisonnement mais donne toujours un chiffre dans le JSON.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -461,9 +478,7 @@ Si l'image ne montre pas clairement un plat ou une recette identifiable, répond
   const data = await response.json();
   const textBlock = (data.content || []).find((b) => b.type === "text");
   if (!textBlock) throw new Error("Réponse inattendue, réessaie.");
-  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
-  let parsed;
-  try { parsed = JSON.parse(cleaned); } catch (e) { throw new Error("Impossible d'analyser cette photo, réessaie avec une image plus nette."); }
+  const parsed = extractLastJson(textBlock.text);
   if (parsed.error) throw new Error("Impossible d'identifier un plat sur cette photo. Réessaie avec une photo plus nette ou remplis le formulaire à la main.");
 
   return {
@@ -482,9 +497,18 @@ Si l'image ne montre pas clairement un plat ou une recette identifiable, répond
 
 async function extractFoodFromImage(base64, mediaType, apiKey) {
   if (!apiKey) throw new Error("Ajoute ta clé API Anthropic dans les réglages pour utiliser la reconnaissance photo.");
-  const prompt = `Regarde cette photo d'un plat ou d'un aliment et estime ses valeurs nutritionnelles pour la portion visible. Réponds uniquement avec un objet JSON STRICT, sans texte avant ni après, sans balises markdown, avec exactement ces clés :
-{"name": string (nom court du plat en français), "calories": nombre entier (estimation kcal pour la portion visible sur la photo), "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes}
-Si l'image ne montre pas clairement un plat ou aliment identifiable, réponds uniquement avec {"error":"non_identifiable"}. Ce sont des estimations visuelles approximatives basées sur la taille apparente de la portion.`;
+  const prompt = `Regarde attentivement cette photo d'un plat ou d'un aliment.
+
+D'ABORD, vérifie s'il y a une étiquette nutritionnelle imprimée (tableau "valeurs nutritionnelles") visible et lisible sur la photo :
+- Si OUI : lis directement les chiffres imprimés sur l'étiquette, ne les recalcule pas. Note bien la base indiquée sur l'étiquette (ex. "pour 100g" ou "par portion de 30g") et mets cette précision dans le champ "name" (ex. "Céréales XYZ — pour 100g"). Les calories/protéines/glucides/lipides renvoyés doivent correspondre exactement à cette base telle qu'imprimée.
+- Si NON (c'est un plat cuisiné, un fruit, un aliment sans étiquette visible) : procède par estimation visuelle :
+  1. Liste chaque composant visible séparément (ex: source de protéine, féculent, légumes, sauce/matière grasse)
+  2. Pour chacun, estime la quantité en te basant sur des repères visuels concrets (diamètre d'assiette ~26cm, taille d'une main/fourchette si visible, épaisseur/volume apparent) plutôt qu'une estimation globale au jugé
+  3. Additionne les valeurs de chaque composant pour obtenir le total de la portion visible
+
+Réfléchis brièvement (3-5 lignes maximum), en indiquant clairement si tu as lu une étiquette ou estimé visuellement, PUIS termine ta réponse par un objet JSON strict sur la toute dernière ligne, sans balises markdown, avec exactement ces clés :
+{"name": string (nom court en français, avec la base "pour 100g"/"par portion" si lu sur une étiquette), "calories": nombre entier, "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes}
+Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final doit être {"error":"non_identifiable"}. Si tu as estimé visuellement (pas d'étiquette), sois transparent sur l'incertitude dans ton raisonnement mais donne toujours un chiffre dans le JSON.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -496,7 +520,7 @@ Si l'image ne montre pas clairement un plat ou aliment identifiable, réponds un
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 600,
+      max_tokens: 800,
       messages: [{
         role: "user",
         content: [
@@ -513,9 +537,7 @@ Si l'image ne montre pas clairement un plat ou aliment identifiable, réponds un
   const data = await response.json();
   const textBlock = (data.content || []).find((b) => b.type === "text");
   if (!textBlock) throw new Error("Réponse inattendue, réessaie.");
-  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
-  let parsed;
-  try { parsed = JSON.parse(cleaned); } catch (e) { throw new Error("Impossible d'analyser cette photo, réessaie avec une image plus nette."); }
+  const parsed = extractLastJson(textBlock.text);
   if (parsed.error) throw new Error("Impossible d'identifier un plat sur cette photo. Réessaie avec une photo plus nette, plus proche, ou remplis les champs à la main.");
 
   return {
@@ -1116,6 +1138,9 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
               {importing ? <Loader2 size={15} className="spin" /> : <Camera size={15} />} {importing ? "Analyse..." : "Depuis une photo"}
             </PrimaryButton>
           </div>
+        </div>
+        <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
+          Astuce pour une meilleure estimation photo : cadre l'assiette entière vue de dessus, en bonne lumière — et vérifie/ajuste toujours les chiffres proposés avant d'ajouter, une photo ne peut pas deviner l'huile ou la sauce cachée.
         </div>
         {importError && (
           <div style={{ background: C.surfaceAlt, borderRadius: 10, padding: 10, marginBottom: 10 }}>
