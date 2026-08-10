@@ -1030,7 +1030,7 @@ function CaloriesScreen(props) {
         options={[{ id: "journal", label: "Journal" }, { id: "recettes", label: "Recettes" }, { id: "plan", label: "Plan semaine" }, { id: "courses", label: "Courses" }]}
       />
       {sub === "journal" && (
-        <JournalScreen date={date} setDate={setDate} foods={foods} calorieGoal={calorieGoal} proteinGoal={proteinGoal} quickFoods={quickFoods} onAdd={onAdd} onDelete={onDelete} onDeleteQuick={onDeleteQuick} apiKey={apiKey} />
+        <JournalScreen date={date} setDate={setDate} foods={foods} calorieGoal={calorieGoal} proteinGoal={proteinGoal} quickFoods={quickFoods} recipes={recipes} onAdd={onAdd} onDelete={onDelete} onDeleteQuick={onDeleteQuick} apiKey={apiKey} />
       )}
       {sub === "recettes" && (
         <RecipeBankScreen recipes={recipes} onAdd={onAddRecipe} onUpdate={onUpdateRecipe} onDelete={onDeleteRecipe} apiKey={apiKey} />
@@ -1043,13 +1043,14 @@ function CaloriesScreen(props) {
   );
 }
 
-function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFoods, onAdd, onDelete, onDeleteQuick, apiKey }) {
+function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFoods, recipes, onAdd, onDelete, onDeleteQuick, apiKey }) {
   const [form, setForm] = useState({ name: "", calories: "", protein: "", carbs: "", fat: "" });
   const [showMacros, setShowMacros] = useState(false);
   const [saveQuick, setSaveQuick] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState(null);
   const [foodPickerOpen, setFoodPickerOpen] = useState(false);
+  const [recipePickerOpen, setRecipePickerOpen] = useState(false);
   const fileInputRef = useRef(null);
 
   const total = foods.reduce((s, f) => s + Number(f.calories || 0), 0);
@@ -1065,6 +1066,10 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
     setSaveQuick(false);
   };
   const addQuick = (q) => onAdd({ id: uid(), name: q.name, calories: q.calories, protein: q.protein, carbs: q.carbs, fat: q.fat }, false);
+  const selectRecipe = (recipe) => {
+    onAdd({ id: uid(), name: recipe.name, calories: recipe.calories, protein: recipe.protein, carbs: recipe.carbs, fat: recipe.fat, fromRecipe: true }, false);
+    setRecipePickerOpen(false);
+  };
 
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
@@ -1130,6 +1135,11 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
       )}
 
       <Card>
+        <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>Depuis tes recettes</div>
+        <PrimaryButton color={C.gold} onClick={() => setRecipePickerOpen(true)}><BookOpen size={15} /> Choisir une recette</PrimaryButton>
+      </Card>
+
+      <Card>
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>Ajouter un aliment</div>
         <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFileChange} />
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
@@ -1193,6 +1203,37 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
           onSelect={(entry) => { onAdd({ id: uid(), ...entry }, false); setFoodPickerOpen(false); }}
         />
       )}
+      {recipePickerOpen && (
+        <AllRecipesPickerModal recipes={recipes} onSelect={selectRecipe} onClose={() => setRecipePickerOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+function AllRecipesPickerModal({ recipes, onSelect, onClose }) {
+  const [filterCat, setFilterCat] = useState("tous");
+  const filtered = filterCat === "tous" ? recipes : recipes.filter((r) => r.mealType === filterCat);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto", maxHeight: "78vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>Choisir une recette</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
+        </div>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 10 }}>
+          <Chip active={filterCat === "tous"} onClick={() => setFilterCat("tous")} color={C.gold}>Tous</Chip>
+          {MEAL_TYPES.map((m) => <Chip key={m.id} active={filterCat === m.id} onClick={() => setFilterCat(m.id)} color={C.gold}>{m.label}</Chip>)}
+        </div>
+        <div style={{ overflowY: "auto" }}>
+          {filtered.length === 0 && <EmptyState text="Aucune recette dans cette catégorie — ajoutes-en dans l'onglet Recettes." />}
+          {filtered.map((r) => (
+            <button key={r.id} onClick={() => onSelect(r)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "10px 2px", cursor: "pointer" }}>
+              <div style={{ color: C.ivory, fontSize: 14 }}>{r.name}</div>
+              <div style={{ color: C.muted, fontSize: 11.5, fontFamily: FONT_MONO }}>{mealMeta(r.mealType).label} · {r.calories} kcal · P{r.protein || 0}g{r.highProtein ? " · protéiné" : ""}</div>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
