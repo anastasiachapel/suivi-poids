@@ -3,7 +3,7 @@ import {
   Home, Scale, Flame, Dumbbell, Wind, Settings as SettingsIcon,
   Plus, X, Trash2, TrendingDown, ChevronLeft, ChevronRight, Check, Loader2,
   Sunrise, UtensilsCrossed, Moon, Apple, Lock, Unlock, Shuffle, Pencil, ChevronDown, ChevronUp, BookOpen, CalendarDays,
-  Users, RefreshCw, Info, Zap, Camera
+  Users, RefreshCw, Info, Zap, Camera, Search
 } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip
@@ -209,6 +209,91 @@ function calcCalorieGoal(settings, currentWeight) {
 function calcProteinGoal(settings, currentWeight) {
   if (!settings.autoCalorie || !currentWeight) return null;
   return Math.round(currentWeight * 1.8);
+}
+
+// ---------- Aliments bruts (banque, valeurs pour 100g) ----------
+const FOOD_CATEGORIES = [
+  { id: "fruits", label: "Fruits" },
+  { id: "legumes", label: "Légumes" },
+  { id: "proteines", label: "Protéines" },
+  { id: "laitiers", label: "Laitiers" },
+  { id: "feculents", label: "Féculents" },
+  { id: "matieres-grasses", label: "Matières grasses" },
+  { id: "divers", label: "Divers" },
+];
+const FOOD_DATABASE = [
+  { name: "Banane", category: "fruits", per100: { calories: 89, protein: 1.1, carbs: 23, fat: 0.3 }, unitLabel: "1 banane moyenne", unitGrams: 118 },
+  { name: "Pomme", category: "fruits", per100: { calories: 52, protein: 0.3, carbs: 14, fat: 0.2 }, unitLabel: "1 pomme moyenne", unitGrams: 180 },
+  { name: "Orange", category: "fruits", per100: { calories: 47, protein: 0.9, carbs: 12, fat: 0.1 }, unitLabel: "1 orange moyenne", unitGrams: 130 },
+  { name: "Fraises", category: "fruits", per100: { calories: 32, protein: 0.7, carbs: 8, fat: 0.3 } },
+  { name: "Avocat", category: "fruits", per100: { calories: 160, protein: 2, carbs: 9, fat: 15 }, unitLabel: "1/2 avocat", unitGrams: 75 },
+  { name: "Raisin", category: "fruits", per100: { calories: 69, protein: 0.7, carbs: 18, fat: 0.2 } },
+  { name: "Kiwi", category: "fruits", per100: { calories: 61, protein: 1.1, carbs: 15, fat: 0.5 }, unitLabel: "1 kiwi", unitGrams: 75 },
+  { name: "Ananas", category: "fruits", per100: { calories: 50, protein: 0.5, carbs: 13, fat: 0.1 } },
+  { name: "Mangue", category: "fruits", per100: { calories: 60, protein: 0.8, carbs: 15, fat: 0.4 } },
+
+  { name: "Brocoli", category: "legumes", per100: { calories: 34, protein: 2.8, carbs: 7, fat: 0.4 } },
+  { name: "Carotte", category: "legumes", per100: { calories: 41, protein: 0.9, carbs: 10, fat: 0.2 } },
+  { name: "Tomate", category: "legumes", per100: { calories: 18, protein: 0.9, carbs: 3.9, fat: 0.2 } },
+  { name: "Concombre", category: "legumes", per100: { calories: 15, protein: 0.7, carbs: 3.6, fat: 0.1 } },
+  { name: "Épinards", category: "legumes", per100: { calories: 23, protein: 2.9, carbs: 3.6, fat: 0.4 } },
+  { name: "Poivron", category: "legumes", per100: { calories: 31, protein: 1, carbs: 6, fat: 0.3 } },
+  { name: "Courgette", category: "legumes", per100: { calories: 17, protein: 1.2, carbs: 3.1, fat: 0.3 } },
+  { name: "Salade verte", category: "legumes", per100: { calories: 15, protein: 1.4, carbs: 2.9, fat: 0.2 } },
+  { name: "Patate douce cuite", category: "legumes", per100: { calories: 86, protein: 1.6, carbs: 20, fat: 0.1 } },
+  { name: "Pomme de terre cuite", category: "legumes", per100: { calories: 77, protein: 2, carbs: 17, fat: 0.1 } },
+  { name: "Champignons", category: "legumes", per100: { calories: 22, protein: 3.1, carbs: 3.3, fat: 0.3 } },
+
+  { name: "Blanc de poulet cuit", category: "proteines", per100: { calories: 165, protein: 31, carbs: 0, fat: 3.6 } },
+  { name: "Blanc de dinde cuit", category: "proteines", per100: { calories: 135, protein: 29, carbs: 0, fat: 1.5 } },
+  { name: "Bœuf haché 5% cuit", category: "proteines", per100: { calories: 172, protein: 26, carbs: 0, fat: 7 } },
+  { name: "Saumon cuit", category: "proteines", per100: { calories: 208, protein: 20, carbs: 0, fat: 13 } },
+  { name: "Cabillaud cuit", category: "proteines", per100: { calories: 105, protein: 23, carbs: 0, fat: 0.9 } },
+  { name: "Thon au naturel égoutté", category: "proteines", per100: { calories: 116, protein: 26, carbs: 0, fat: 1 } },
+  { name: "Crevettes cuites", category: "proteines", per100: { calories: 99, protein: 21, carbs: 0.2, fat: 1.4 } },
+  { name: "Œuf", category: "proteines", per100: { calories: 155, protein: 13, carbs: 1.1, fat: 11 }, unitLabel: "1 œuf", unitGrams: 50 },
+  { name: "Jambon blanc", category: "proteines", per100: { calories: 107, protein: 18, carbs: 1, fat: 3 } },
+  { name: "Tofu", category: "proteines", per100: { calories: 76, protein: 8, carbs: 1.9, fat: 4.8 } },
+
+  { name: "Yaourt nature", category: "laitiers", per100: { calories: 61, protein: 3.5, carbs: 4.7, fat: 3.3 } },
+  { name: "Skyr nature", category: "laitiers", per100: { calories: 63, protein: 11, carbs: 4, fat: 0.2 } },
+  { name: "Fromage blanc 0%", category: "laitiers", per100: { calories: 46, protein: 8, carbs: 4, fat: 0.2 } },
+  { name: "Lait demi-écrémé", category: "laitiers", per100: { calories: 46, protein: 3.3, carbs: 4.8, fat: 1.6 } },
+  { name: "Emmental", category: "laitiers", per100: { calories: 380, protein: 28, carbs: 0, fat: 30 } },
+  { name: "Mozzarella", category: "laitiers", per100: { calories: 280, protein: 22, carbs: 2.2, fat: 20 } },
+  { name: "Feta", category: "laitiers", per100: { calories: 264, protein: 14, carbs: 4, fat: 21 } },
+
+  { name: "Riz blanc cuit", category: "feculents", per100: { calories: 130, protein: 2.7, carbs: 28, fat: 0.3 } },
+  { name: "Riz complet cuit", category: "feculents", per100: { calories: 123, protein: 2.6, carbs: 26, fat: 1 } },
+  { name: "Pâtes cuites", category: "feculents", per100: { calories: 131, protein: 5, carbs: 25, fat: 1.1 } },
+  { name: "Pain complet", category: "feculents", per100: { calories: 247, protein: 9, carbs: 41, fat: 3.4 }, unitLabel: "1 tranche", unitGrams: 30 },
+  { name: "Pain blanc", category: "feculents", per100: { calories: 265, protein: 9, carbs: 49, fat: 3.2 }, unitLabel: "1 tranche", unitGrams: 30 },
+  { name: "Flocons d'avoine", category: "feculents", per100: { calories: 389, protein: 17, carbs: 66, fat: 7 } },
+  { name: "Quinoa cuit", category: "feculents", per100: { calories: 120, protein: 4.4, carbs: 21, fat: 1.9 } },
+  { name: "Lentilles cuites", category: "feculents", per100: { calories: 116, protein: 9, carbs: 20, fat: 0.4 } },
+  { name: "Pois chiches cuits", category: "feculents", per100: { calories: 164, protein: 8.9, carbs: 27, fat: 2.6 } },
+  { name: "Haricots rouges cuits", category: "feculents", per100: { calories: 127, protein: 8.7, carbs: 23, fat: 0.5 } },
+
+  { name: "Huile d'olive", category: "matieres-grasses", per100: { calories: 884, protein: 0, carbs: 0, fat: 100 }, unitLabel: "1 c. à soupe", unitGrams: 14 },
+  { name: "Amandes", category: "matieres-grasses", per100: { calories: 579, protein: 21, carbs: 22, fat: 50 }, unitLabel: "Une poignée (~20)", unitGrams: 25 },
+  { name: "Noix", category: "matieres-grasses", per100: { calories: 654, protein: 15, carbs: 14, fat: 65 } },
+  { name: "Beurre de cacahuète", category: "matieres-grasses", per100: { calories: 588, protein: 25, carbs: 20, fat: 50 }, unitLabel: "1 c. à soupe", unitGrams: 16 },
+  { name: "Beurre", category: "matieres-grasses", per100: { calories: 717, protein: 0.9, carbs: 0.1, fat: 81 } },
+
+  { name: "Miel", category: "divers", per100: { calories: 304, protein: 0.3, carbs: 82, fat: 0 }, unitLabel: "1 c. à soupe", unitGrams: 21 },
+  { name: "Chocolat noir 70%", category: "divers", per100: { calories: 598, protein: 7.8, carbs: 46, fat: 43 } },
+  { name: "Houmous", category: "divers", per100: { calories: 166, protein: 7.9, carbs: 14, fat: 9.6 } },
+  { name: "Granola", category: "divers", per100: { calories: 471, protein: 10, carbs: 64, fat: 20 } },
+].map((f) => ({ ...f, id: "food-" + slugify(f.name) }));
+function scaleFood(food, grams) {
+  const factor = grams / 100;
+  return {
+    name: food.name,
+    calories: Math.round(food.per100.calories * factor),
+    protein: Math.round(food.per100.protein * factor * 10) / 10,
+    carbs: Math.round(food.per100.carbs * factor * 10) / 10,
+    fat: Math.round(food.per100.fat * factor * 10) / 10,
+  };
 }
 
 // ---------- Seed recipe bank (protein-forward, editable/deletable by the user) ----------
@@ -937,6 +1022,7 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
   const [saveQuick, setSaveQuick] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState(null);
+  const [foodPickerOpen, setFoodPickerOpen] = useState(false);
   const fileInputRef = useRef(null);
 
   const total = foods.reduce((s, f) => s + Number(f.calories || 0), 0);
@@ -1019,10 +1105,17 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
       <Card>
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 10 }}>Ajouter un aliment</div>
         <input ref={fileInputRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handleFileChange} />
-        <div style={{ marginBottom: 10 }}>
-          <PrimaryButton color={C.sage} onClick={() => fileInputRef.current?.click()} disabled={importing}>
-            {importing ? <Loader2 size={15} className="spin" /> : <Camera size={15} />} {importing ? "Analyse de la photo..." : "Reconnaître depuis une photo"}
-          </PrimaryButton>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <div style={{ flex: 1 }}>
+            <PrimaryButton color={C.gold} onClick={() => setFoodPickerOpen(true)}>
+              <Search size={15} /> Chercher un aliment
+            </PrimaryButton>
+          </div>
+          <div style={{ flex: 1 }}>
+            <PrimaryButton color={C.sage} onClick={() => fileInputRef.current?.click()} disabled={importing}>
+              {importing ? <Loader2 size={15} className="spin" /> : <Camera size={15} />} {importing ? "Analyse..." : "Depuis une photo"}
+            </PrimaryButton>
+          </div>
         </div>
         {importError && (
           <div style={{ background: C.surfaceAlt, borderRadius: 10, padding: 10, marginBottom: 10 }}>
@@ -1063,6 +1156,90 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
           {quickFoods.map((q) => <ListRow key={q.id} title={q.name} right={`${q.calories} kcal`} onDelete={() => onDeleteQuick(q.id)} />)}
         </Card>
       )}
+
+      {foodPickerOpen && (
+        <FoodDatabaseModal
+          onClose={() => setFoodPickerOpen(false)}
+          onSelect={(entry) => { onAdd({ id: uid(), ...entry }, false); setFoodPickerOpen(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FoodDatabaseModal({ onClose, onSelect }) {
+  const [query, setQuery] = useState("");
+  const [filterCat, setFilterCat] = useState("tous");
+  const [selected, setSelected] = useState(null);
+  const [grams, setGrams] = useState(100);
+  const [useUnit, setUseUnit] = useState(false);
+
+  const filtered = FOOD_DATABASE.filter((f) =>
+    (filterCat === "tous" || f.category === filterCat) &&
+    f.name.toLowerCase().includes(query.trim().toLowerCase())
+  );
+
+  if (selected) {
+    const activeGrams = useUnit && selected.unitGrams ? selected.unitGrams : grams;
+    const computed = scaleFood(selected, activeGrams);
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+        <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>{selected.name}</span>
+            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
+          </div>
+
+          {selected.unitGrams ? (
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              <Chip active={useUnit} color={C.gold} onClick={() => setUseUnit(true)}>{selected.unitLabel}</Chip>
+              <Chip active={!useUnit} color={C.gold} onClick={() => setUseUnit(false)}>En grammes</Chip>
+            </div>
+          ) : null}
+
+          {!useUnit && (
+            <div style={{ marginBottom: 14 }}>
+              <TextField label="Quantité (g)" type="number" inputMode="numeric" value={grams} onChange={(e) => setGrams(Number(e.target.value) || 0)} />
+            </div>
+          )}
+
+          <Card style={{ marginBottom: 14, background: C.surfaceAlt }}>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 20, color: C.ivory }}>{computed.calories} kcal</div>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: C.muted, marginTop: 4 }}>P {computed.protein}g · G {computed.carbs}g · L {computed.fat}g</div>
+            <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4 }}>pour {useUnit && selected.unitGrams ? selected.unitLabel.toLowerCase() : `${grams}g`}</div>
+          </Card>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <PrimaryButton color={C.surfaceAlt} style={{ color: C.ivory }} onClick={() => setSelected(null)}>Retour</PrimaryButton>
+            <PrimaryButton color={C.gold} onClick={() => onSelect(computed)}><Plus size={15} /> Ajouter au journal</PrimaryButton>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto", maxHeight: "75vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>Chercher un aliment</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
+        </div>
+        <TextField placeholder="Ex. banane, poulet, riz..." value={query} onChange={(e) => setQuery(e.target.value)} />
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "10px 0" }}>
+          <Chip active={filterCat === "tous"} onClick={() => setFilterCat("tous")} color={C.gold}>Tous</Chip>
+          {FOOD_CATEGORIES.map((c) => <Chip key={c.id} active={filterCat === c.id} onClick={() => setFilterCat(c.id)} color={C.gold}>{c.label}</Chip>)}
+        </div>
+        <div style={{ overflowY: "auto" }}>
+          {filtered.length === 0 && <EmptyState text="Aucun aliment trouvé." />}
+          {filtered.map((f) => (
+            <button key={f.id} onClick={() => { setSelected(f); setGrams(100); setUseUnit(!!f.unitGrams); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "10px 2px", cursor: "pointer" }}>
+              <div style={{ color: C.ivory, fontSize: 14 }}>{f.name}</div>
+              <div style={{ color: C.muted, fontSize: 11.5, fontFamily: FONT_MONO }}>{f.per100.calories} kcal / 100g{f.unitLabel ? ` · ${f.unitLabel}` : ""}</div>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
