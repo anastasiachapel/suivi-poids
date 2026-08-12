@@ -505,14 +505,15 @@ async function extractFoodFromImage(base64, mediaType, apiKey) {
   const prompt = `Regarde attentivement cette photo d'un plat ou d'un aliment.
 
 D'ABORD, vérifie s'il y a une étiquette nutritionnelle imprimée (tableau "valeurs nutritionnelles") visible et lisible sur la photo :
-- Si OUI : lis directement les chiffres imprimés sur l'étiquette, ne les recalcule pas. Note bien la base indiquée sur l'étiquette (ex. "pour 100g" ou "par portion de 30g") et mets cette précision dans le champ "name" (ex. "Céréales XYZ — pour 100g"). Les calories/protéines/glucides/lipides renvoyés doivent correspondre exactement à cette base telle qu'imprimée.
-- Si NON (c'est un plat cuisiné, un fruit, un aliment sans étiquette visible) : procède par estimation visuelle :
+- Si OUI : lis les chiffres imprimés. Convertis-les en équivalent "pour 100g" (si l'étiquette indique déjà pour 100g, garde tel quel ; si elle indique "par portion de Xg", calcule au prorata pour obtenir l'équivalent 100g — ex. portion de 30g à 150kcal devient 500kcal pour 100g). Si le poids total du produit/emballage est aussi visible et lisible sur le paquet (ex. "250g net"), note-le.
+- Si NON (plat cuisiné, fruit, aliment sans étiquette visible) : procède par estimation visuelle :
   1. Liste chaque composant visible séparément (ex: source de protéine, féculent, légumes, sauce/matière grasse)
   2. Pour chacun, estime la quantité en te basant sur des repères visuels concrets (diamètre d'assiette ~26cm, taille d'une main/fourchette si visible, épaisseur/volume apparent) plutôt qu'une estimation globale au jugé
   3. Additionne les valeurs de chaque composant pour obtenir le total de la portion visible
 
 Réfléchis brièvement (3-5 lignes maximum), en indiquant clairement si tu as lu une étiquette ou estimé visuellement, PUIS termine ta réponse par un objet JSON strict sur la toute dernière ligne, sans balises markdown, avec exactement ces clés :
-{"name": string (nom court en français, avec la base "pour 100g"/"par portion" si lu sur une étiquette), "calories": nombre entier, "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes}
+{"labelDetected": booléen (true si étiquette lue, false si estimation visuelle), "name": string (nom court en français), "totalWeight": nombre entier en grammes si le poids total de l'emballage est lisible, sinon null, "calories": nombre entier, "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes}
+Si "labelDetected" est true, les valeurs calories/protein/carbs/fat doivent être l'équivalent POUR 100g (pas la portion de l'étiquette). Si "labelDetected" est false, ces valeurs correspondent à ta meilleure estimation du total pour la portion visible sur la photo.
 Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final doit être {"error":"non_identifiable"}. Si tu as estimé visuellement (pas d'étiquette), sois transparent sur l'incertitude dans ton raisonnement mais donne toujours un chiffre dans le JSON.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -545,7 +546,21 @@ Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final d
   const parsed = extractLastJson(textBlock.text);
   if (parsed.error) throw new Error("Impossible d'identifier un plat sur cette photo. Réessaie avec une photo plus nette, plus proche, ou remplis les champs à la main.");
 
+  if (parsed.labelDetected) {
+    return {
+      labelDetected: true,
+      name: parsed.name || "",
+      totalWeight: parsed.totalWeight ? Math.round(parsed.totalWeight) : null,
+      per100: {
+        calories: Number(parsed.calories) || 0,
+        protein: Number(parsed.protein) || 0,
+        carbs: Number(parsed.carbs) || 0,
+        fat: Number(parsed.fat) || 0,
+      },
+    };
+  }
   return {
+    labelDetected: false,
     name: parsed.name || "",
     calories: parsed.calories ? String(Math.round(parsed.calories)) : "",
     protein: parsed.protein ? String(Math.round(parsed.protein)) : "",
@@ -1071,6 +1086,8 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
     setRecipePickerOpen(false);
   };
 
+  const [labelScan, setLabelScan] = useState(null); // {name, per100, totalWeight} when a label was read
+
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -1079,8 +1096,12 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
     try {
       const base64 = await fileToBase64(file);
       const data = await extractFoodFromImage(base64, file.type || "image/jpeg", apiKey);
-      setForm(data);
-      setShowMacros(true);
+      if (data.labelDetected) {
+        setLabelScan({ name: data.name, per100: data.per100, totalWeight: data.totalWeight });
+      } else {
+        setForm(data);
+        setShowMacros(true);
+      }
     } catch (err) {
       setImportError(err.message || "Une erreur est survenue.");
     } finally {
@@ -1206,6 +1227,14 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
       {recipePickerOpen && (
         <AllRecipesPickerModal recipes={recipes} onSelect={selectRecipe} onClose={() => setRecipePickerOpen(false)} />
       )}
+      {labelScan && (
+        <ScaledEntryModal
+          name={labelScan.name} per100={labelScan.per100} initialGrams={labelScan.totalWeight || 100}
+          hint={labelScan.totalWeight ? `Poids détecté sur l'emballage : ${labelScan.totalWeight}g — ajuste si tu n'en manges qu'une partie.` : "Étiquette lue pour 100g — indique la quantité réellement consommée."}
+          onClose={() => setLabelScan(null)}
+          onSelect={(entry) => { onAdd({ id: uid(), ...entry }, false); setLabelScan(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -1238,12 +1267,54 @@ function AllRecipesPickerModal({ recipes, onSelect, onClose }) {
   );
 }
 
+function ScaledEntryModal({ name, per100, initialGrams = 100, unitLabel, unitGrams, hint, onClose, onSelect, onBack }) {
+  const [grams, setGrams] = useState(initialGrams);
+  const [useUnit, setUseUnit] = useState(!!unitGrams && !hint);
+  const activeGrams = useUnit && unitGrams ? unitGrams : grams;
+  const computed = scaleFood({ per100 }, activeGrams);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>{name}</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
+        </div>
+
+        {hint && <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 12 }}>{hint}</div>}
+
+        {unitGrams ? (
+          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+            <Chip active={useUnit} color={C.gold} onClick={() => setUseUnit(true)}>{unitLabel}</Chip>
+            <Chip active={!useUnit} color={C.gold} onClick={() => setUseUnit(false)}>En grammes</Chip>
+          </div>
+        ) : null}
+
+        {!useUnit && (
+          <div style={{ marginBottom: 14 }}>
+            <TextField label="Quantité (g)" type="number" inputMode="numeric" value={grams} onChange={(e) => setGrams(Number(e.target.value) || 0)} />
+          </div>
+        )}
+
+        <Card style={{ marginBottom: 14, background: C.surfaceAlt }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 20, color: C.ivory }}>{computed.calories} kcal</div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: C.muted, marginTop: 4 }}>P {computed.protein}g · G {computed.carbs}g · L {computed.fat}g</div>
+          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4 }}>pour {useUnit && unitGrams ? unitLabel.toLowerCase() : `${grams}g`}</div>
+        </Card>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <PrimaryButton color={C.surfaceAlt} style={{ color: C.ivory }} onClick={onBack || onClose}>{onBack ? "Retour" : "Annuler"}</PrimaryButton>
+          <PrimaryButton color={C.gold} onClick={() => onSelect({ ...computed, name })}><Plus size={15} /> Ajouter au journal</PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FoodDatabaseModal({ onClose, onSelect }) {
   const [query, setQuery] = useState("");
   const [filterCat, setFilterCat] = useState("tous");
   const [selected, setSelected] = useState(null);
-  const [grams, setGrams] = useState(100);
-  const [useUnit, setUseUnit] = useState(false);
 
   const filtered = FOOD_DATABASE.filter((f) =>
     (filterCat === "tous" || f.category === filterCat) &&
@@ -1251,41 +1322,13 @@ function FoodDatabaseModal({ onClose, onSelect }) {
   );
 
   if (selected) {
-    const activeGrams = useUnit && selected.unitGrams ? selected.unitGrams : grams;
-    const computed = scaleFood(selected, activeGrams);
     return (
-      <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
-        <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>{selected.name}</span>
-            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
-          </div>
-
-          {selected.unitGrams ? (
-            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-              <Chip active={useUnit} color={C.gold} onClick={() => setUseUnit(true)}>{selected.unitLabel}</Chip>
-              <Chip active={!useUnit} color={C.gold} onClick={() => setUseUnit(false)}>En grammes</Chip>
-            </div>
-          ) : null}
-
-          {!useUnit && (
-            <div style={{ marginBottom: 14 }}>
-              <TextField label="Quantité (g)" type="number" inputMode="numeric" value={grams} onChange={(e) => setGrams(Number(e.target.value) || 0)} />
-            </div>
-          )}
-
-          <Card style={{ marginBottom: 14, background: C.surfaceAlt }}>
-            <div style={{ fontFamily: FONT_MONO, fontSize: 20, color: C.ivory }}>{computed.calories} kcal</div>
-            <div style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: C.muted, marginTop: 4 }}>P {computed.protein}g · G {computed.carbs}g · L {computed.fat}g</div>
-            <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4 }}>pour {useUnit && selected.unitGrams ? selected.unitLabel.toLowerCase() : `${grams}g`}</div>
-          </Card>
-
-          <div style={{ display: "flex", gap: 8 }}>
-            <PrimaryButton color={C.surfaceAlt} style={{ color: C.ivory }} onClick={() => setSelected(null)}>Retour</PrimaryButton>
-            <PrimaryButton color={C.gold} onClick={() => onSelect(computed)}><Plus size={15} /> Ajouter au journal</PrimaryButton>
-          </div>
-        </div>
-      </div>
+      <ScaledEntryModal
+        name={selected.name} per100={selected.per100} initialGrams={100}
+        unitLabel={selected.unitLabel} unitGrams={selected.unitGrams}
+        onBack={() => setSelected(null)} onClose={onClose}
+        onSelect={onSelect}
+      />
     );
   }
 
@@ -1304,7 +1347,7 @@ function FoodDatabaseModal({ onClose, onSelect }) {
         <div style={{ overflowY: "auto" }}>
           {filtered.length === 0 && <EmptyState text="Aucun aliment trouvé." />}
           {filtered.map((f) => (
-            <button key={f.id} onClick={() => { setSelected(f); setGrams(100); setUseUnit(!!f.unitGrams); }} style={{ width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "10px 2px", cursor: "pointer" }}>
+            <button key={f.id} onClick={() => setSelected(f)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "10px 2px", cursor: "pointer" }}>
               <div style={{ color: C.ivory, fontSize: 14 }}>{f.name}</div>
               <div style={{ color: C.muted, fontSize: 11.5, fontFamily: FONT_MONO }}>{f.per100.calories} kcal / 100g{f.unitLabel ? ` · ${f.unitLabel}` : ""}</div>
             </button>
