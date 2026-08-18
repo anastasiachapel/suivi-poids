@@ -215,6 +215,16 @@ function calcProteinGoal(settings, currentWeight) {
   if (!settings.autoCalorie || !currentWeight) return null;
   return Math.round(currentWeight * 1.8);
 }
+// Glucides (plafond indicatif) : ce qu'il reste une fois les protéines et un minimum de graisses
+// (0,8g/kg, nécessaire au bon fonctionnement hormonal) couverts sur l'objectif calorique.
+function calcCarbGoal(settings, currentWeight, calorieGoal, proteinGoal) {
+  if (!settings.autoCalorie || !currentWeight || !calorieGoal || !proteinGoal) return null;
+  const fatGoal = currentWeight * 0.8;
+  const proteinKcal = proteinGoal * 4;
+  const fatKcal = fatGoal * 9;
+  const remainingKcal = calorieGoal - proteinKcal - fatKcal;
+  return Math.max(0, Math.round(remainingKcal / 4));
+}
 
 // ---------- Aliments bruts (banque, valeurs pour 100g) ----------
 const FOOD_CATEGORIES = [
@@ -705,24 +715,35 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [s, w, f, qf, a, st, r, mp, wp, ws] = await Promise.all([
-        loadKey("settings", DEFAULT_SETTINGS),
+      const s = await loadKey("settings", DEFAULT_SETTINGS);
+      const cfg = s.supabaseUrl && s.supabaseAnonKey ? { url: s.supabaseUrl.replace(/\/+$/, ""), anonKey: s.supabaseAnonKey } : null;
+
+      const [w, f, qf, a, st, mp, wp, ws] = await Promise.all([
         loadKey("weight-entries", []),
         loadKey("food-log", {}),
         loadKey("quick-foods", []),
         loadKey("activity-log", {}),
         loadKey("stretch-log", {}),
-        loadKey("recipes", null),
         loadKey("meal-plans", {}),
         loadKey("workout-plans", {}),
         loadKey("workout-sessions", null),
       ]);
       setSettings(s); setWeightEntries(w); setFoodLog(f); setQuickFoods(qf);
       setActivityLog(a); setStretchLog(st);
-      if (r === null) { setRecipes(SEED_RECIPES); saveKey("recipes", SEED_RECIPES); } else { setRecipes(r); }
       setMealPlans(mp);
       setWorkoutPlans(wp);
       if (ws === null) { setWorkoutSessions(SEED_WORKOUT_SESSIONS); saveKey("workout-sessions", SEED_WORKOUT_SESSIONS); } else { setWorkoutSessions(ws); }
+
+      // Recettes : partagées via Supabase si configuré, sinon locales à cet appareil.
+      let r;
+      if (cfg) {
+        r = await getShared("recipes", cfg);
+        if (r === null) { r = SEED_RECIPES; await saveShared("recipes", SEED_RECIPES, cfg); }
+      } else {
+        r = await loadKey("recipes", null);
+        if (r === null) { r = SEED_RECIPES; saveKey("recipes", SEED_RECIPES); }
+      }
+      setRecipes(r);
       setLoading(false);
     })();
   }, []);
@@ -733,7 +754,6 @@ export default function App() {
   const updateQuickFoods = useCallback((next) => { setQuickFoods(next); saveKey("quick-foods", next); }, []);
   const updateActivityLog = useCallback((next) => { setActivityLog(next); saveKey("activity-log", next); }, []);
   const updateStretchLog = useCallback((next) => { setStretchLog(next); saveKey("stretch-log", next); }, []);
-  const updateRecipes = useCallback((next) => { setRecipes(next); saveKey("recipes", next); }, []);
   const updateMealPlans = useCallback((next) => { setMealPlans(next); saveKey("meal-plans", next); }, []);
   const updateWorkoutPlans = useCallback((next) => { setWorkoutPlans(next); saveKey("workout-plans", next); }, []);
   const updateWorkoutSessions = useCallback((next) => { setWorkoutSessions(next); saveKey("workout-sessions", next); }, []);
@@ -766,6 +786,7 @@ export default function App() {
   const startWeight = sortedWeights.length ? sortedWeights[0].weight : null;
   const effectiveCalorieGoal = calcCalorieGoal(settings, currentWeight);
   const effectiveProteinGoal = calcProteinGoal(settings, currentWeight);
+  const effectiveCarbGoal = calcCarbGoal(settings, currentWeight, effectiveCalorieGoal, effectiveProteinGoal);
 
   const todaysFood = foodLog[todayStr()] || [];
   const caloriesToday = todaysFood.reduce((sum, f) => sum + Number(f.calories || 0), 0);
@@ -776,6 +797,27 @@ export default function App() {
 
   const mySlug = slugify(settings.name);
   const sharedConfig = settings.supabaseUrl && settings.supabaseAnonKey ? { url: settings.supabaseUrl.replace(/\/+$/, ""), anonKey: settings.supabaseAnonKey } : null;
+  const updateRecipes = useCallback((next) => {
+    setRecipes(next);
+    if (sharedConfig) saveShared("recipes", next, sharedConfig);
+    else saveKey("recipes", next);
+  }, [sharedConfig]);
+  const recipesSyncedRef = useRef(false);
+  useEffect(() => {
+    if (loading || !sharedConfig || recipesSyncedRef.current) return;
+    recipesSyncedRef.current = true;
+    (async () => {
+      const shared = await getShared("recipes", sharedConfig);
+      if (shared && shared.length > 0) setRecipes(shared);
+      else saveShared("recipes", recipes, sharedConfig);
+    })();
+  }, [loading, sharedConfig]);
+  const refreshSharedRecipes = useCallback(async () => {
+    if (!sharedConfig) return;
+    const shared = await getShared("recipes", sharedConfig);
+    if (shared) setRecipes(shared);
+  }, [sharedConfig]);
+
   useEffect(() => {
     if (loading || !mySlug) return;
     const summary = {
@@ -847,8 +889,9 @@ export default function App() {
           )}
           {tab === "calories" && (
             <CaloriesScreen
-              date={calDate} setDate={setCalDate} foods={foodLog[calDate] || []} calorieGoal={effectiveCalorieGoal} proteinGoal={effectiveProteinGoal}
+              date={calDate} setDate={setCalDate} foods={foodLog[calDate] || []} calorieGoal={effectiveCalorieGoal} proteinGoal={effectiveProteinGoal} carbGoal={effectiveCarbGoal}
               quickFoods={quickFoods} recipes={recipes} mealPlans={mealPlans}
+              caloriesBurnedToday={(activityLog[calDate] || []).reduce((s, a) => s + Number(a.calories || 0), 0)}
               onAdd={(food, saveAsQuick) => {
                 const day = foodLog[calDate] || [];
                 updateFoodLog({ ...foodLog, [calDate]: [...day, food] });
@@ -862,6 +905,8 @@ export default function App() {
               updateMealPlans={updateMealPlans}
               logRecipeToDay={logRecipeToDay}
               apiKey={settings.anthropicApiKey}
+              recipesShared={!!sharedConfig}
+              onRefreshRecipes={refreshSharedRecipes}
             />
           )}
           {tab === "activity" && (
@@ -904,7 +949,7 @@ export default function App() {
 // ---------- Home ----------
 function HomeScreen({ settings, currentWeight, startWeight, sortedWeights, caloriesToday, caloriesBurnedToday, stretchMinutesToday, todaysActivityCount, goTo }) {
   const chartData = sortedWeights.slice(-7).map((w) => ({ date: w.date, weight: w.weight }));
-  const remaining = settings.calorieGoal ? settings.calorieGoal - caloriesToday : null;
+  const remaining = settings.calorieGoal ? settings.calorieGoal + caloriesBurnedToday - caloriesToday : null;
   const progressPct = settings.weightGoal && startWeight && currentWeight
     ? Math.max(0, Math.min(100, ((startWeight - currentWeight) / (startWeight - settings.weightGoal)) * 100)) : null;
 
@@ -1034,8 +1079,8 @@ function WeightScreen({ settings, sortedWeights, onAdd, onDelete }) {
 
 // ================= Calories hub (Journal / Recettes / Plan / Courses) =================
 function CaloriesScreen(props) {
-  const { date, setDate, foods, calorieGoal, proteinGoal, quickFoods, recipes, mealPlans,
-    onAdd, onDelete, onDeleteQuick, onAddRecipe, onUpdateRecipe, onDeleteRecipe, updateMealPlans, logRecipeToDay, apiKey } = props;
+  const { date, setDate, foods, calorieGoal, proteinGoal, carbGoal, quickFoods, recipes, mealPlans, caloriesBurnedToday,
+    onAdd, onDelete, onDeleteQuick, onAddRecipe, onUpdateRecipe, onDeleteRecipe, updateMealPlans, logRecipeToDay, apiKey, recipesShared, onRefreshRecipes } = props;
   const [sub, setSub] = useState("journal");
 
   return (
@@ -1045,10 +1090,10 @@ function CaloriesScreen(props) {
         options={[{ id: "journal", label: "Journal" }, { id: "recettes", label: "Recettes" }, { id: "plan", label: "Plan semaine" }, { id: "courses", label: "Courses" }]}
       />
       {sub === "journal" && (
-        <JournalScreen date={date} setDate={setDate} foods={foods} calorieGoal={calorieGoal} proteinGoal={proteinGoal} quickFoods={quickFoods} recipes={recipes} onAdd={onAdd} onDelete={onDelete} onDeleteQuick={onDeleteQuick} apiKey={apiKey} />
+        <JournalScreen date={date} setDate={setDate} foods={foods} calorieGoal={calorieGoal} proteinGoal={proteinGoal} carbGoal={carbGoal} quickFoods={quickFoods} recipes={recipes} caloriesBurnedToday={caloriesBurnedToday} onAdd={onAdd} onDelete={onDelete} onDeleteQuick={onDeleteQuick} apiKey={apiKey} />
       )}
       {sub === "recettes" && (
-        <RecipeBankScreen recipes={recipes} onAdd={onAddRecipe} onUpdate={onUpdateRecipe} onDelete={onDeleteRecipe} apiKey={apiKey} />
+        <RecipeBankScreen recipes={recipes} onAdd={onAddRecipe} onUpdate={onUpdateRecipe} onDelete={onDeleteRecipe} apiKey={apiKey} isShared={recipesShared} onRefresh={onRefreshRecipes} />
       )}
       {sub === "plan" && (
         <PlanScreen recipes={recipes} calorieGoal={calorieGoal} proteinGoal={proteinGoal} mealPlans={mealPlans} updateMealPlans={updateMealPlans} logRecipeToDay={logRecipeToDay} onGoToGroceries={() => setSub("courses")} />
@@ -1058,7 +1103,7 @@ function CaloriesScreen(props) {
   );
 }
 
-function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFoods, recipes, onAdd, onDelete, onDeleteQuick, apiKey }) {
+function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, carbGoal, quickFoods, recipes, onAdd, onDelete, onDeleteQuick, apiKey, caloriesBurnedToday = 0 }) {
   const [form, setForm] = useState({ name: "", calories: "", protein: "", carbs: "", fat: "" });
   const [showMacros, setShowMacros] = useState(false);
   const [saveQuick, setSaveQuick] = useState(false);
@@ -1070,9 +1115,13 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
 
   const total = foods.reduce((s, f) => s + Number(f.calories || 0), 0);
   const totalProtein = foods.reduce((s, f) => s + Number(f.protein || 0), 0);
-  const remaining = calorieGoal ? calorieGoal - total : null;
-  const pct = calorieGoal ? Math.min(100, (total / calorieGoal) * 100) : 0;
+  const totalCarbs = foods.reduce((s, f) => s + Number(f.carbs || 0), 0);
+  const adjustedGoal = calorieGoal ? calorieGoal + caloriesBurnedToday : null;
+  const remaining = adjustedGoal != null ? adjustedGoal - total : null;
+  const pct = adjustedGoal ? Math.min(100, (total / adjustedGoal) * 100) : 0;
   const proteinPct = proteinGoal ? Math.min(100, (totalProtein / proteinGoal) * 100) : 0;
+  const carbsPct = carbGoal ? Math.min(100, (totalCarbs / carbGoal) * 100) : 0;
+  const carbsOver = carbGoal != null && totalCarbs > carbGoal;
 
   const submit = () => {
     if (!form.name.trim() || !form.calories) return;
@@ -1121,7 +1170,9 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
           {calorieGoal ? (
             <div style={{ textAlign: "right" }}>
               <div style={{ fontFamily: FONT_MONO, fontSize: 15, color: remaining < 0 ? C.danger : C.sage }}>{remaining >= 0 ? `${remaining} restantes` : `${-remaining} de plus`}</div>
-              <div style={{ fontSize: 11, color: C.muted }}>objectif {calorieGoal} kcal</div>
+              <div style={{ fontSize: 11, color: C.muted }}>
+                objectif {calorieGoal} kcal{caloriesBurnedToday > 0 ? ` + ${caloriesBurnedToday} sport` : ""}
+              </div>
             </div>
           ) : <div style={{ fontSize: 11, color: C.muted }}>règle un objectif dans les réglages</div>}
         </div>
@@ -1138,6 +1189,19 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, quickFo
             <div style={{ height: "100%", width: `${proteinPct}%`, background: C.sage, borderRadius: 99 }} />
           </div>
           <div style={{ fontSize: 10.5, color: C.muted, marginTop: 6 }}>Prioriser les protéines aide à préserver le muscle pendant la perte de graisse.</div>
+        </Card>
+      )}
+
+      {carbGoal != null && (
+        <Card>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div style={{ fontSize: 12, color: C.muted }}>Glucides (max conseillé)</div>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: carbsOver ? C.danger : C.rust }}>{totalCarbs}g / {carbGoal}g</div>
+          </div>
+          <div style={{ height: 5, background: C.surfaceAlt, borderRadius: 99, overflow: "hidden", marginTop: 8 }}>
+            <div style={{ height: "100%", width: `${carbsPct}%`, background: carbsOver ? C.danger : C.rust, borderRadius: 99 }} />
+          </div>
+          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 6 }}>Repère indicatif (calculé à partir de tes calories et protéines), pas une limite stricte — vise une tendance sur la journée plutôt qu'un chiffre exact.</div>
         </Card>
       )}
 
@@ -1444,7 +1508,7 @@ function RecipeCard({ recipe, onEdit, onDelete }) {
   );
 }
 
-function RecipeBankScreen({ recipes, onAdd, onUpdate, onDelete, apiKey }) {
+function RecipeBankScreen({ recipes, onAdd, onUpdate, onDelete, apiKey, isShared, onRefresh }) {
   const [filter, setFilter] = useState("tous");
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -1474,6 +1538,12 @@ function RecipeBankScreen({ recipes, onAdd, onUpdate, onDelete, apiKey }) {
 
   return (
     <div>
+      {isShared && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, padding: "8px 10px", background: C.surfaceAlt, borderRadius: 10 }}>
+          <span style={{ fontSize: 11.5, color: C.muted, display: "flex", alignItems: "center", gap: 5 }}><Users size={13} color={C.sage} /> Recettes partagées avec ta copine</span>
+          <button onClick={onRefresh} aria-label="Actualiser" style={{ background: "none", border: "none", cursor: "pointer" }}><RefreshCw size={14} color={C.muted} /></button>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 10 }}>
         <Chip active={filter === "tous"} onClick={() => setFilter("tous")} color={C.gold}>Tous</Chip>
         {MEAL_TYPES.map((m) => <Chip key={m.id} active={filter === m.id} onClick={() => setFilter(m.id)} color={C.gold}>{m.label}</Chip>)}
@@ -2646,6 +2716,7 @@ function SettingsModal({ settings, currentWeight, onClose, onSave }) {
 
   const previewGoal = calcCalorieGoal({ ...form, autoCalorie: true }, currentWeight);
   const previewProtein = calcProteinGoal({ ...form, autoCalorie: true }, currentWeight);
+  const previewCarbs = calcCarbGoal({ ...form, autoCalorie: true }, currentWeight, previewGoal, previewProtein);
   const canAutoCalc = currentWeight && form.age && form.height && form.sex;
 
   return (
@@ -2694,12 +2765,16 @@ function SettingsModal({ settings, currentWeight, onClose, onSave }) {
                       <div style={{ fontSize: 11, color: C.muted }}>Protéines</div>
                       <div style={{ fontFamily: FONT_MONO, fontSize: 18, color: C.sage }}>{previewProtein}g</div>
                     </div>
+                    <div style={{ flex: 1, background: C.surfaceAlt, borderRadius: 10, padding: 12 }}>
+                      <div style={{ fontSize: 11, color: C.muted }}>Glucides max</div>
+                      <div style={{ fontFamily: FONT_MONO, fontSize: 18, color: C.rust }}>{previewCarbs}g</div>
+                    </div>
                   </div>
                 ) : (
                   <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>Renseigne ton sexe, âge, taille, et ajoute une pesée pour calculer ton objectif.</div>
                 )}
                 <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
-                  Calories estimées via Mifflin-St Jeor, protéines via 1,8g/kg pour préserver le muscle — l'idée est de viser la perte de graisse, pas juste la perte de poids sur la balance. Valeurs indicatives, pas un avis médical.
+                  Calories via Mifflin-St Jeor, protéines via 1,8g/kg pour préserver le muscle, glucides = ce qu'il reste une fois protéines et un minimum de graisses (0,8g/kg) couverts — l'idée est de viser la perte de graisse, pas juste la perte de poids sur la balance. Valeurs indicatives, pas un avis médical.
                 </div>
               </div>
             ) : (
