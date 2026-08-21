@@ -477,6 +477,7 @@ Si l'image ne montre ni plat, ni recette, ni étiquette lisible, le JSON final d
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 1000,
+      temperature: 0.2,
       messages: [{
         role: "user",
         content: [
@@ -537,6 +538,7 @@ Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final d
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 800,
+      temperature: 0.2,
       messages: [{
         role: "user",
         content: [
