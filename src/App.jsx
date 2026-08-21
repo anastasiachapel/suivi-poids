@@ -310,6 +310,21 @@ function scaleFood(food, grams) {
     fat: Math.round(food.per100.fat * factor * 10) / 10,
   };
 }
+// Tente de faire correspondre un composant identifié par l'IA à un aliment connu de la banque
+// (valeurs fiables pour 100g), pour permettre un recalcul exact si l'utilisateur corrige/échange.
+function matchFoodDatabase(label) {
+  const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const target = norm(label);
+  if (!target) return null;
+  let best = null;
+  for (const f of FOOD_DATABASE) {
+    const fname = norm(f.name);
+    if (target.includes(fname) || fname.includes(target)) {
+      if (!best || fname.length > norm(best.name).length) best = f;
+    }
+  }
+  return best;
+}
 
 // ---------- Seed recipe bank (protein-forward, editable/deletable by the user) ----------
 const SEED_RECIPES = [
@@ -516,16 +531,18 @@ async function extractFoodFromImage(base64, mediaType, apiKey) {
   const prompt = `Regarde attentivement cette photo d'un plat ou d'un aliment.
 
 D'ABORD, vérifie s'il y a une étiquette nutritionnelle imprimée (tableau "valeurs nutritionnelles") visible et lisible sur la photo :
-- Si OUI : lis les chiffres imprimés. Convertis-les en équivalent "pour 100g" (si l'étiquette indique déjà pour 100g, garde tel quel ; si elle indique "par portion de Xg", calcule au prorata pour obtenir l'équivalent 100g — ex. portion de 30g à 150kcal devient 500kcal pour 100g). Si le poids total du produit/emballage est aussi visible et lisible sur le paquet (ex. "250g net"), note-le.
-- Si NON (plat cuisiné, fruit, aliment sans étiquette visible) : procède par estimation visuelle :
-  1. Liste chaque composant visible séparément (ex: source de protéine, féculent, légumes, sauce/matière grasse)
-  2. Pour chacun, estime la quantité en te basant sur des repères visuels concrets (diamètre d'assiette ~26cm, taille d'une main/fourchette si visible, épaisseur/volume apparent) plutôt qu'une estimation globale au jugé
-  3. Additionne les valeurs de chaque composant pour obtenir le total de la portion visible
+- Si OUI : lis les chiffres imprimés. Convertis-les en équivalent "pour 100g" (si l'étiquette indique déjà pour 100g, garde tel quel ; si elle indique "par portion de Xg", calcule au prorata — ex. portion de 30g à 150kcal devient 500kcal pour 100g). Si le poids total du produit/emballage est aussi visible et lisible, note-le.
+- Si NON (plat cuisiné, fruit, aliment sans étiquette visible) : décompose le plat en composants distincts et bien identifiables (ex: "Riz blanc", "Poulet grillé", "Brocolis", "Sauce/huile" — reste sur des noms simples et génériques, sans marque). Pour CHAQUE composant, estime sa quantité en grammes en te basant sur des repères visuels concrets (diamètre d'assiette ~26cm, taille d'une main/fourchette si visible, épaisseur/volume apparent), puis ses calories et macronutriments pour cette quantité précise.
 
-Réfléchis brièvement (3-5 lignes maximum), en indiquant clairement si tu as lu une étiquette ou estimé visuellement, PUIS termine ta réponse par un objet JSON strict sur la toute dernière ligne, sans balises markdown, avec exactement ces clés :
-{"labelDetected": booléen (true si étiquette lue, false si estimation visuelle), "name": string (nom court en français), "totalWeight": nombre entier en grammes si le poids total de l'emballage est lisible, sinon null, "calories": nombre entier, "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes}
-Si "labelDetected" est true, les valeurs calories/protein/carbs/fat doivent être l'équivalent POUR 100g (pas la portion de l'étiquette). Si "labelDetected" est false, ces valeurs correspondent à ta meilleure estimation du total pour la portion visible sur la photo.
-Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final doit être {"error":"non_identifiable"}. Si tu as estimé visuellement (pas d'étiquette), sois transparent sur l'incertitude dans ton raisonnement mais donne toujours un chiffre dans le JSON.`;
+Réfléchis brièvement (3-5 lignes maximum), en indiquant clairement si tu as lu une étiquette ou décomposé visuellement, PUIS termine ta réponse par un objet JSON strict sur la toute dernière ligne, sans balises markdown.
+
+Si étiquette lue, utilise cette forme exacte :
+{"labelDetected": true, "name": string (nom court en français), "totalWeight": nombre entier en grammes si lisible sinon null, "calories": nombre entier POUR 100g, "protein": nombre entier en grammes POUR 100g, "carbs": nombre entier en grammes POUR 100g, "fat": nombre entier en grammes POUR 100g}
+
+Si décomposition visuelle, utilise cette forme exacte :
+{"labelDetected": false, "name": string (nom global du plat en français), "components": [{"label": string (nom simple du composant en français), "grams": nombre entier (quantité estimée), "calories": nombre entier, "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes}, ...]}
+
+Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final doit être {"error":"non_identifiable"}. Sois transparent sur l'incertitude dans ton raisonnement mais donne toujours des chiffres dans le JSON.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -537,7 +554,7 @@ Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final d
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 800,
+      max_tokens: 1200,
       temperature: 0.2,
       messages: [{
         role: "user",
@@ -571,14 +588,21 @@ Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final d
       },
     };
   }
-  return {
-    labelDetected: false,
-    name: parsed.name || "",
-    calories: parsed.calories ? String(Math.round(parsed.calories)) : "",
-    protein: parsed.protein ? String(Math.round(parsed.protein)) : "",
-    carbs: parsed.carbs ? String(Math.round(parsed.carbs)) : "",
-    fat: parsed.fat ? String(Math.round(parsed.fat)) : "",
-  };
+
+  const components = (Array.isArray(parsed.components) ? parsed.components : []).map((c) => {
+    const grams = c.grams ? Math.round(c.grams) : 100;
+    const matched = matchFoodDatabase(c.label);
+    if (matched) {
+      const scaled = scaleFood(matched, grams);
+      return { id: uid(), label: matched.name, grams, matchedFood: matched, calories: scaled.calories, protein: scaled.protein, carbs: scaled.carbs, fat: scaled.fat };
+    }
+    return {
+      id: uid(), label: c.label || "Élément", grams, matchedFood: null,
+      calories: Number(c.calories) || 0, protein: Number(c.protein) || 0, carbs: Number(c.carbs) || 0, fat: Number(c.fat) || 0,
+    };
+  });
+
+  return { labelDetected: false, name: parsed.name || "Plat", components };
 }
 
 // ---------- Small UI atoms ----------
@@ -1138,6 +1162,7 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, carbGoa
   };
 
   const [labelScan, setLabelScan] = useState(null); // {name, per100, totalWeight} when a label was read
+  const [breakdownScan, setBreakdownScan] = useState(null); // {name, components} when visually decomposed
 
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
@@ -1150,8 +1175,7 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, carbGoa
       if (data.labelDetected) {
         setLabelScan({ name: data.name, per100: data.per100, totalWeight: data.totalWeight });
       } else {
-        setForm(data);
-        setShowMacros(true);
+        setBreakdownScan({ name: data.name, components: data.components });
       }
     } catch (err) {
       setImportError(err.message || "Une erreur est survenue.");
@@ -1301,6 +1325,149 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, carbGoa
           onSelect={(entry) => { onAdd({ id: uid(), ...entry }, false); setLabelScan(null); }}
         />
       )}
+      {breakdownScan && (
+        <ComponentBreakdownModal
+          name={breakdownScan.name} components={breakdownScan.components}
+          onClose={() => setBreakdownScan(null)}
+          onSelect={(entry) => { onAdd({ id: uid(), ...entry }, false); setBreakdownScan(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ComponentBreakdownRow({ item, onChange, onSwap, onRemove }) {
+  const set = (patch) => onChange({ ...item, ...patch });
+  const setGrams = (grams) => {
+    if (item.matchedFood) {
+      const scaled = scaleFood(item.matchedFood, grams);
+      onChange({ ...item, grams, ...scaled });
+    } else {
+      onChange({ ...item, grams });
+    }
+  };
+  return (
+    <Card style={{ marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <TextField value={item.label} onChange={(e) => set({ label: e.target.value })} />
+        </div>
+        <button onClick={onSwap} aria-label="Choisir dans la banque" style={{ background: "none", border: `1px solid ${C.border}`, borderRadius: 8, padding: 8, cursor: "pointer", flexShrink: 0 }}><Search size={14} color={C.muted} /></button>
+        <button onClick={onRemove} aria-label="Retirer" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, flexShrink: 0 }}><Trash2 size={14} color={C.muted} /></button>
+      </div>
+      {item.matchedFood && (
+        <div style={{ fontSize: 10, color: C.sage, marginBottom: 8 }}>Valeurs de la banque d'aliments (fiable)</div>
+      )}
+      <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+        <TextField type="number" placeholder="Grammes" value={item.grams} onChange={(e) => setGrams(Number(e.target.value) || 0)} />
+        <TextField type="number" placeholder="Kcal" value={item.calories} onChange={(e) => set({ calories: Number(e.target.value) || 0 })} disabled={!!item.matchedFood} />
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <TextField type="number" placeholder="Prot. g" value={item.protein} onChange={(e) => set({ protein: Number(e.target.value) || 0 })} disabled={!!item.matchedFood} />
+        <TextField type="number" placeholder="Gluc. g" value={item.carbs} onChange={(e) => set({ carbs: Number(e.target.value) || 0 })} disabled={!!item.matchedFood} />
+        <TextField type="number" placeholder="Lip. g" value={item.fat} onChange={(e) => set({ fat: Number(e.target.value) || 0 })} disabled={!!item.matchedFood} />
+      </div>
+    </Card>
+  );
+}
+
+function ComponentBreakdownModal({ name, components, onClose, onSelect }) {
+  const [dishName, setDishName] = useState(name);
+  const [items, setItems] = useState(components);
+  const [swapIndex, setSwapIndex] = useState(null);
+
+  const updateItem = (idx, next) => setItems((prev) => prev.map((it, i) => (i === idx ? next : it)));
+  const removeItem = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
+  const addItem = () => setItems((prev) => [...prev, { id: uid(), label: "", grams: 100, matchedFood: null, calories: 0, protein: 0, carbs: 0, fat: 0 }]);
+  const swapItem = (food) => {
+    setItems((prev) => prev.map((it, i) => {
+      if (i !== swapIndex) return it;
+      const scaled = scaleFood(food, it.grams || 100);
+      return { ...it, label: food.name, matchedFood: food, ...scaled };
+    }));
+    setSwapIndex(null);
+  };
+
+  const totals = items.reduce((acc, it) => ({
+    calories: acc.calories + Number(it.calories || 0),
+    protein: acc.protein + Number(it.protein || 0),
+    carbs: acc.carbs + Number(it.carbs || 0),
+    fat: acc.fat + Number(it.fat || 0),
+  }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>Vérifie les éléments</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
+        </div>
+        <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
+          Corrige le nom d'un élément (ex. "Riz blanc" → "Riz complet") ou tape 🔍 pour le choisir dans la banque d'aliments — les macros se recalculent automatiquement. Les champs grisés viennent d'une valeur fiable de la banque.
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <TextField label="Nom du plat" value={dishName} onChange={(e) => setDishName(e.target.value)} />
+        </div>
+
+        <div style={{ overflowY: "auto", flex: 1 }}>
+          {items.map((item, idx) => (
+            <ComponentBreakdownRow
+              key={item.id} item={item}
+              onChange={(next) => updateItem(idx, next)}
+              onSwap={() => setSwapIndex(idx)}
+              onRemove={() => removeItem(idx)}
+            />
+          ))}
+          <button onClick={addItem} style={{ width: "100%", background: "none", border: `1px dashed ${C.border}`, borderRadius: 10, padding: "10px", cursor: "pointer", color: C.sage, fontSize: 12.5, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 10 }}>
+            <Plus size={13} /> Ajouter un élément oublié
+          </button>
+        </div>
+
+        <Card style={{ marginBottom: 12, background: C.surfaceAlt }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 20, color: C.ivory }}>{Math.round(totals.calories)} kcal</div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11.5, color: C.muted, marginTop: 4 }}>P {Math.round(totals.protein * 10) / 10}g · G {Math.round(totals.carbs * 10) / 10}g · L {Math.round(totals.fat * 10) / 10}g</div>
+        </Card>
+        <PrimaryButton color={C.gold} onClick={() => onSelect({ name: dishName, calories: Math.round(totals.calories), protein: Math.round(totals.protein * 10) / 10, carbs: Math.round(totals.carbs * 10) / 10, fat: Math.round(totals.fat * 10) / 10 })}>
+          <Plus size={15} /> Ajouter au journal
+        </PrimaryButton>
+      </div>
+
+      {swapIndex !== null && (
+        <FoodSwapPickerModal onClose={() => setSwapIndex(null)} onSelect={swapItem} />
+      )}
+    </div>
+  );
+}
+
+function FoodSwapPickerModal({ onClose, onSelect }) {
+  const [query, setQuery] = useState("");
+  const [filterCat, setFilterCat] = useState("tous");
+  const filtered = FOOD_DATABASE.filter((f) =>
+    (filterCat === "tous" || f.category === filterCat) &&
+    f.name.toLowerCase().includes(query.trim().toLowerCase())
+  );
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.7)", display: "flex", alignItems: "flex-end", zIndex: 60 }} onClick={(e) => { e.stopPropagation(); onClose(); }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto", maxHeight: "70vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 17, color: C.ivory }}>Choisir un aliment</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={18} color={C.muted} /></button>
+        </div>
+        <TextField placeholder="Ex. riz complet..." value={query} onChange={(e) => setQuery(e.target.value)} />
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", padding: "10px 0" }}>
+          <Chip active={filterCat === "tous"} onClick={() => setFilterCat("tous")} color={C.gold}>Tous</Chip>
+          {FOOD_CATEGORIES.map((c) => <Chip key={c.id} active={filterCat === c.id} onClick={() => setFilterCat(c.id)} color={C.gold}>{c.label}</Chip>)}
+        </div>
+        <div style={{ overflowY: "auto" }}>
+          {filtered.length === 0 && <EmptyState text="Aucun aliment trouvé." />}
+          {filtered.map((f) => (
+            <button key={f.id} onClick={() => onSelect(f)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${C.border}`, padding: "10px 2px", cursor: "pointer" }}>
+              <div style={{ color: C.ivory, fontSize: 14 }}>{f.name}</div>
+              <div style={{ color: C.muted, fontSize: 11.5, fontFamily: FONT_MONO }}>{f.per100.calories} kcal / 100g</div>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
