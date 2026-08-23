@@ -312,18 +312,28 @@ function scaleFood(food, grams) {
 }
 // Tente de faire correspondre un composant identifié par l'IA à un aliment connu de la banque
 // (valeurs fiables pour 100g), pour permettre un recalcul exact si l'utilisateur corrige/échange.
+const FOOD_MATCH_STOPWORDS = new Set(["de", "du", "des", "le", "la", "les", "au", "aux", "a", "et", "un", "une", "cuit", "cuite", "cuits", "cuites", "grille", "grillee", "grillees", "grilles", "frais", "fraiche"]);
 function matchFoodDatabase(label) {
-  const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
-  const target = norm(label);
-  if (!target) return null;
-  let best = null;
+  const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const tokenize = (s) => norm(s)
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .filter((w) => !FOOD_MATCH_STOPWORDS.has(w))
+    .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w)); // pluriel naïf
+
+  const targetTokens = tokenize(label);
+  if (targetTokens.length === 0) return null;
+
+  let best = null, bestScore = 0;
   for (const f of FOOD_DATABASE) {
-    const fname = norm(f.name);
-    if (target.includes(fname) || fname.includes(target)) {
-      if (!best || fname.length > norm(best.name).length) best = f;
-    }
+    const fTokens = tokenize(f.name);
+    if (fTokens.length === 0) continue;
+    const shared = fTokens.filter((t) => targetTokens.includes(t));
+    if (shared.length === 0) continue;
+    const score = shared.length / Math.min(fTokens.length, targetTokens.length);
+    if (score > bestScore) { bestScore = score; best = f; }
   }
-  return best;
+  return bestScore >= 0.5 ? best : null; // au moins la moitié des mots-clés en commun
 }
 
 // ---------- Seed recipe bank (protein-forward, editable/deletable by the user) ----------
