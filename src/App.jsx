@@ -443,11 +443,23 @@ function fileToBase64(file) {
 }
 
 function extractLastJson(text) {
-  const start = text.lastIndexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) throw new Error("Impossible d'analyser cette photo, réessaie avec une image plus nette.");
+  const fail = () => { throw new Error("Impossible d'analyser cette photo, réessaie avec une image plus nette."); };
+  let end = -1;
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (text[i] === "}") { end = i; break; }
+  }
+  if (end === -1) fail();
+  let depth = 0, start = -1;
+  for (let i = end; i >= 0; i--) {
+    if (text[i] === "}") depth++;
+    else if (text[i] === "{") {
+      depth--;
+      if (depth === 0) { start = i; break; }
+    }
+  }
+  if (start === -1) fail();
   try { return JSON.parse(text.slice(start, end + 1)); }
-  catch (e) { throw new Error("Impossible d'analyser cette photo, réessaie avec une image plus nette."); }
+  catch (e) { fail(); }
 }
 
 async function extractRecipeFromImage(base64, mediaType, apiKey) {
