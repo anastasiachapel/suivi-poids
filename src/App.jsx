@@ -310,32 +310,6 @@ function scaleFood(food, grams) {
     fat: Math.round(food.per100.fat * factor * 10) / 10,
   };
 }
-// Tente de faire correspondre un composant identifié par l'IA à un aliment connu de la banque
-// (valeurs fiables pour 100g), pour permettre un recalcul exact si l'utilisateur corrige/échange.
-const FOOD_MATCH_STOPWORDS = new Set(["de", "du", "des", "le", "la", "les", "au", "aux", "a", "et", "un", "une", "cuit", "cuite", "cuits", "cuites", "grille", "grillee", "grillees", "grilles", "frais", "fraiche"]);
-function matchFoodDatabase(label) {
-  const norm = (s) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const tokenize = (s) => norm(s)
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean)
-    .filter((w) => !FOOD_MATCH_STOPWORDS.has(w))
-    .map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w)); // pluriel naïf
-
-  const targetTokens = tokenize(label);
-  if (targetTokens.length === 0) return null;
-
-  let best = null, bestScore = 0;
-  for (const f of FOOD_DATABASE) {
-    const fTokens = tokenize(f.name);
-    if (fTokens.length === 0) continue;
-    const shared = fTokens.filter((t) => targetTokens.includes(t));
-    if (shared.length === 0) continue;
-    const score = shared.length / Math.min(fTokens.length, targetTokens.length);
-    if (score > bestScore) { bestScore = score; best = f; }
-  }
-  return bestScore >= 0.5 ? best : null; // au moins la moitié des mots-clés en commun
-}
-
 // ---------- Seed recipe bank (protein-forward, editable/deletable by the user) ----------
 const SEED_RECIPES = [
   { name: "Skyr, fruits rouges et granola", mealType: "petit-dej", calories: 380, protein: 30, carbs: 42, fat: 10, prepTime: 5, highProtein: true, ingredients: ["Skyr nature", "Fruits rouges surgelés", "Granola sans sucre ajouté", "Miel (filet)"], instructions: "Verse le skyr dans un bol, ajoute les fruits rouges décongelés, termine avec le granola et un filet de miel." },
@@ -599,18 +573,10 @@ Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final d
     };
   }
 
-  const components = (Array.isArray(parsed.components) ? parsed.components : []).map((c) => {
-    const grams = c.grams ? Math.round(c.grams) : 100;
-    const matched = matchFoodDatabase(c.label);
-    if (matched) {
-      const scaled = scaleFood(matched, grams);
-      return { id: uid(), label: matched.name, grams, matchedFood: matched, calories: scaled.calories, protein: scaled.protein, carbs: scaled.carbs, fat: scaled.fat };
-    }
-    return {
-      id: uid(), label: c.label || "Élément", grams, matchedFood: null,
-      calories: Number(c.calories) || 0, protein: Number(c.protein) || 0, carbs: Number(c.carbs) || 0, fat: Number(c.fat) || 0,
-    };
-  });
+  const components = (Array.isArray(parsed.components) ? parsed.components : []).map((c) => ({
+    id: uid(), label: c.label || "Élément", grams: c.grams ? Math.round(c.grams) : 100, matchedFood: null,
+    calories: Number(c.calories) || 0, protein: Number(c.protein) || 0, carbs: Number(c.carbs) || 0, fat: Number(c.fat) || 0,
+  }));
 
   return { labelDetected: false, name: parsed.name || "Plat", components };
 }
@@ -1413,7 +1379,7 @@ function ComponentBreakdownModal({ name, components, onClose, onSelect }) {
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
         </div>
         <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
-          Corrige le nom d'un élément (ex. "Riz blanc" → "Riz complet") ou tape 🔍 pour le choisir dans la banque d'aliments — les macros se recalculent automatiquement. Les champs grisés viennent d'une valeur fiable de la banque.
+          Corrige directement les chiffres si un élément te semble faux, ou tape 🔍 pour le remplacer par une valeur exacte de la banque d'aliments (recalcule automatiquement selon la quantité).
         </div>
         <div style={{ marginBottom: 10 }}>
           <TextField label="Nom du plat" value={dishName} onChange={(e) => setDishName(e.target.value)} />
