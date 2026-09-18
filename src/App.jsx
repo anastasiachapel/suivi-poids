@@ -593,7 +593,50 @@ Si l'image ne montre ni plat, ni aliment, ni étiquette lisible, le JSON final d
   return { labelDetected: false, name: parsed.name || "Plat", components };
 }
 
-// ---------- Small UI atoms ----------
+async function extractFoodFromText(description, apiKey) {
+  if (!apiKey) throw new Error("Ajoute ta clé API Anthropic dans les réglages pour utiliser cette fonction.");
+  if (!description || !description.trim()) throw new Error("Décris ce que tu as mangé.");
+  const prompt = `Voici la description de ce que quelqu'un a mangé, écrite par lui-même :
+"${description.trim()}"
+
+Décompose ce repas en composants distincts et bien identifiables (ex: "Riz blanc", "Poulet grillé", "Brocolis", "Sauce/huile"). Si une quantité est précisée dans la description (grammes, portions, "une assiette de", "un bol de", etc.), utilise-la. Sinon, pars sur une portion individuelle standard raisonnable. Pour CHAQUE composant, indique sa quantité estimée en grammes, puis ses calories et macronutriments pour cette quantité précise.
+
+Réfléchis brièvement (3-5 lignes maximum), PUIS termine ta réponse par un objet JSON strict sur la toute dernière ligne, sans balises markdown, avec exactement cette forme :
+{"name": string (nom global du repas en français), "components": [{"label": string (nom simple du composant en français), "grams": nombre entier, "calories": nombre entier, "protein": nombre entier en grammes, "carbs": nombre entier en grammes, "fat": nombre entier en grammes}, ...]}
+Si la description ne permet pas d'identifier un repas ou un aliment, le JSON final doit être {"error":"non_identifiable"}. Sois transparent sur l'incertitude dans ton raisonnement mais donne toujours des chiffres dans le JSON.`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1200,
+      temperature: 0.2,
+      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+    }),
+  });
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("Clé API invalide. Vérifie-la dans les réglages.");
+    throw new Error("L'analyse a échoué. Réessaie.");
+  }
+  const data = await response.json();
+  const textBlock = (data.content || []).find((b) => b.type === "text");
+  if (!textBlock) throw new Error("Réponse inattendue, réessaie.");
+  const parsed = extractLastJson(textBlock.text);
+  if (parsed.error) throw new Error("Décris un peu plus précisément ce que tu as mangé, ou ajoute-le à la main.");
+
+  const components = (Array.isArray(parsed.components) ? parsed.components : []).map((c) => ({
+    id: uid(), label: c.label || "Élément", grams: c.grams ? Math.round(c.grams) : 100, matchedFood: null,
+    calories: Number(c.calories) || 0, protein: Number(c.protein) || 0, carbs: Number(c.carbs) || 0, fat: Number(c.fat) || 0,
+  }));
+  return { name: parsed.name || "Repas", components };
+}
+
 function Card({ children, style, ...props }) {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 18, padding: 16, boxShadow: "0 1px 2px rgba(20,20,30,0.04), 0 6px 16px rgba(20,20,30,0.05)", ...style }} {...props}>
@@ -1150,7 +1193,25 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, carbGoa
   };
 
   const [labelScan, setLabelScan] = useState(null); // {name, per100, totalWeight} when a label was read
-  const [breakdownScan, setBreakdownScan] = useState(null); // {name, components} when visually decomposed
+  const [breakdownScan, setBreakdownScan] = useState(null); // {name, components} when decomposed
+  const [describeOpen, setDescribeOpen] = useState(false);
+  const [describeText, setDescribeText] = useState("");
+  const [describing, setDescribing] = useState(false);
+  const [describeError, setDescribeError] = useState(null);
+
+  const analyzeDescription = async () => {
+    setDescribeError(null); setDescribing(true);
+    try {
+      const data = await extractFoodFromText(describeText, apiKey);
+      setBreakdownScan({ name: data.name, components: data.components });
+      setDescribeOpen(false);
+      setDescribeText("");
+    } catch (err) {
+      setDescribeError(err.message || "Une erreur est survenue.");
+    } finally {
+      setDescribing(false);
+    }
+  };
 
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
@@ -1253,6 +1314,11 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, carbGoa
             </PrimaryButton>
           </div>
         </div>
+        <div style={{ marginBottom: 10 }}>
+          <PrimaryButton color={C.rust} onClick={() => setDescribeOpen(true)}>
+            <Pencil size={15} /> Décrire ce que j'ai mangé
+          </PrimaryButton>
+        </div>
         <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, marginBottom: 10 }}>
           Astuce pour une meilleure estimation photo : cadre l'assiette entière vue de dessus, en bonne lumière — et vérifie/ajuste toujours les chiffres proposés avant d'ajouter, une photo ne peut pas deviner l'huile ou la sauce cachée.
         </div>
@@ -1320,10 +1386,43 @@ function JournalScreen({ date, setDate, foods, calorieGoal, proteinGoal, carbGoa
           onSelect={(entry) => { onAdd({ id: uid(), ...entry }, false); setBreakdownScan(null); }}
         />
       )}
+      {describeOpen && (
+        <DescribeMealModal
+          text={describeText} setText={setDescribeText} loading={describing} error={describeError}
+          onClose={() => { setDescribeOpen(false); setDescribeError(null); }}
+          onAnalyze={analyzeDescription}
+        />
+      )}
     </div>
   );
 }
 
+function DescribeMealModal({ text, setText, loading, error, onClose, onAnalyze }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,16,15,0.6)", display: "flex", alignItems: "flex-end", zIndex: 50 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.surface, borderTop: `1px solid ${C.border}`, borderRadius: "20px 20px 0 0", padding: 20, width: "100%", maxWidth: 430, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <span style={{ fontFamily: FONT_DISPLAY, fontSize: 18, color: C.ivory }}>Décrire ce que j'ai mangé</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={20} color={C.muted} /></button>
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
+          Décris ton repas en quelques mots, avec des quantités si tu les connais (sinon on part sur une portion standard). Ex. "Un bol de riz avec 150g de poulet grillé et des brocolis vapeur".
+        </div>
+        <TextField textarea placeholder="Ex. Deux œufs au plat, une tranche de pain complet et un avocat" value={text} onChange={(e) => setText(e.target.value)} />
+        {error && (
+          <div style={{ background: C.surfaceAlt, borderRadius: 10, padding: 10, marginTop: 10 }}>
+            <div style={{ color: C.danger, fontSize: 12, lineHeight: 1.5 }}>{error}</div>
+          </div>
+        )}
+        <div style={{ marginTop: 14 }}>
+          <PrimaryButton color={C.rust} onClick={onAnalyze} disabled={loading || !text.trim()}>
+            {loading ? <Loader2 size={15} className="spin" /> : <Pencil size={15} />} {loading ? "Analyse..." : "Analyser"}
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
 function ComponentBreakdownRow({ item, onChange, onSwap, onRemove }) {
   const set = (patch) => onChange({ ...item, ...patch });
   const setGrams = (grams) => {
